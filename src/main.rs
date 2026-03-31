@@ -674,6 +674,11 @@ fn run_terminal_wm(config: Config, cols: u16, rows: u16, shell_name: &str, encod
         }
     }
 
+    if let Err(e) = wm.initialize_startup_tabs(&wtmux_config.startup.tabs) {
+        error!("Failed to initialize startup tabs: {}", e);
+        return Err(anyhow::anyhow!(e));
+    }
+
     // Initialize renderer with color scheme
     let mut renderer = WmRenderer::with_color_scheme(color_scheme);
     // Propagate font config into renderer

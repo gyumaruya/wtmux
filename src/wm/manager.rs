@@ -31,7 +31,7 @@ use super::tab::{Tab, TabId};
 use super::pane::PaneId;
 use super::layout::SplitDirection;
 
-use crate::config::PrefixKey;
+use crate::config::{PrefixKey, StartupTabConfig};
 
 /// The central manager for all tabs and pane operations.
 ///
@@ -139,6 +139,11 @@ impl WindowManager {
         self.active_tab = tab_id;
         
         tab_id
+    }
+
+    /// Get the currently active tab ID
+    pub fn active_tab_id(&self) -> TabId {
+        self.active_tab
     }
 
     /// Close the current tab
@@ -266,9 +271,58 @@ impl WindowManager {
 
     /// Rename the active tab
     pub fn rename_active_tab(&mut self, name: &str) {
-        if let Some(tab) = self.active_tab_mut() {
+        let _ = self.rename_tab(self.active_tab, name);
+    }
+
+    /// Rename a tab by ID
+    pub fn rename_tab(&mut self, tab_id: TabId, name: &str) -> bool {
+        if let Some(tab) = self.tabs.get_mut(&tab_id) {
             tab.name = name.to_string();
+            return true;
         }
+        false
+    }
+
+    /// Activate a tab by ID
+    pub fn activate_tab(&mut self, tab_id: TabId) -> bool {
+        if self.tabs.contains_key(&tab_id) {
+            self.last_active_tab = Some(self.active_tab);
+            self.active_tab = tab_id;
+            return true;
+        }
+        false
+    }
+
+    /// Create configured startup tabs and dispatch their initial commands.
+    pub fn initialize_startup_tabs(&mut self, startup_tabs: &[StartupTabConfig]) -> Result<(), String> {
+        if startup_tabs.is_empty() {
+            return Ok(());
+        }
+
+        let first_tab_id = self.active_tab;
+        let mut tab_ids = Vec::with_capacity(startup_tabs.len());
+        tab_ids.push(first_tab_id);
+
+        if let Some(name) = startup_tabs[0].name.as_deref().filter(|name| !name.trim().is_empty()) {
+            self.rename_tab(first_tab_id, name);
+        }
+
+        for tab_config in startup_tabs.iter().skip(1) {
+            let tab_id = self.new_tab();
+            if let Some(name) = tab_config.name.as_deref().filter(|name| !name.trim().is_empty()) {
+                self.rename_tab(tab_id, name);
+            }
+            tab_ids.push(tab_id);
+        }
+
+        for (tab_id, tab_config) in tab_ids.into_iter().zip(startup_tabs.iter()) {
+            if let Some(command) = tab_config.command.as_deref() {
+                self.send_command_to_tab(tab_id, command)?;
+            }
+        }
+
+        self.activate_tab(first_tab_id);
+        Ok(())
     }
 
     /// Switch to next layout
@@ -613,12 +667,25 @@ impl WindowManager {
 
     /// Write to the focused pane
     pub fn write(&mut self, data: &[u8]) -> Result<(), String> {
-        if let Some(tab) = self.active_tab_mut() {
-            if let Some(pane) = tab.focused_pane_mut() {
-                pane.session.write(data).map_err(|e| e.to_string())?;
-            }
-        }
+        self.write_to_tab(self.active_tab, data)
+    }
+
+    /// Write to the focused pane in a specific tab.
+    pub fn write_to_tab(&mut self, tab_id: TabId, data: &[u8]) -> Result<(), String> {
+        let tab = self.tabs.get_mut(&tab_id)
+            .ok_or_else(|| format!("Tab {} not found", tab_id))?;
+        let pane = tab.focused_pane_mut()
+            .ok_or_else(|| format!("Tab {} has no focused pane", tab_id))?;
+        pane.session.write(data).map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Send a command to a specific tab and execute it with Enter.
+    pub fn send_command_to_tab(&mut self, tab_id: TabId, command: &str) -> Result<(), String> {
+        let Some(bytes) = command_bytes(command) else {
+            return Ok(());
+        };
+        self.write_to_tab(tab_id, &bytes)
     }
     
     /// Paste text to the focused pane with bracketed paste support
@@ -632,7 +699,7 @@ impl WindowManager {
         // Terminals interpret CR as Enter (one keypress).
         // CRLF would be two characters and some shells (PowerShell) treat
         // them as two separate newlines, causing double-submit.
-        let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
+        let normalized = normalize_terminal_input(text);
 
         let bytes = if use_bracketed {
             format!("\x1b[200~{}\x1b[201~", normalized).into_bytes()
@@ -890,5 +957,99 @@ impl WindowManager {
                     None
                 }
             })
+    }
+}
+
+fn normalize_terminal_input(text: &str) -> String {
+    text.replace("\r\n", "\r").replace('\n', "\r")
+}
+
+fn command_bytes(command: &str) -> Option<Vec<u8>> {
+    if command.trim().is_empty() {
+        return None;
+    }
+
+    let mut normalized = normalize_terminal_input(command);
+    if !normalized.ends_with('\r') {
+        normalized.push('\r');
+    }
+
+    Some(normalized.into_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_manager() -> WindowManager {
+        WindowManager::new(
+            120,
+            40,
+            Some("pwsh.exe".to_string()),
+            Some(65001),
+            PrefixKey { char: 'b' },
+        )
+    }
+
+    #[test]
+    fn test_initialize_startup_tabs_creates_tabs_and_restores_focus() {
+        let mut wm = create_manager();
+        wm.start().expect("initial session should start");
+
+        wm.initialize_startup_tabs(&[
+            StartupTabConfig {
+                name: Some("server".to_string()),
+                command: Some("npm run dev".to_string()),
+            },
+            StartupTabConfig {
+                name: Some("tests".to_string()),
+                command: Some("cargo test".to_string()),
+            },
+        ])
+        .expect("startup tabs should initialize");
+
+        let tabs = wm.tab_info();
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs[0].1, "server");
+        assert_eq!(tabs[1].1, "tests");
+        assert_eq!(wm.active_tab_id(), 1);
+
+        let first_writes = wm.tabs.get(&1).unwrap()
+            .focused_pane().unwrap()
+            .session.recorded_writes();
+        let second_writes = wm.tabs.get(&2).unwrap()
+            .focused_pane().unwrap()
+            .session.recorded_writes();
+
+        assert_eq!(first_writes, vec![b"npm run dev\r".to_vec()]);
+        assert_eq!(second_writes, vec![b"cargo test\r".to_vec()]);
+    }
+
+    #[test]
+    fn test_initialize_startup_tabs_skips_blank_commands() {
+        let mut wm = create_manager();
+        wm.start().expect("initial session should start");
+
+        wm.initialize_startup_tabs(&[
+            StartupTabConfig {
+                name: Some("idle".to_string()),
+                command: Some("   ".to_string()),
+            },
+            StartupTabConfig {
+                name: Some("multi".to_string()),
+                command: Some("echo one\necho two".to_string()),
+            },
+        ])
+        .expect("startup tabs should initialize");
+
+        let first_writes = wm.tabs.get(&1).unwrap()
+            .focused_pane().unwrap()
+            .session.recorded_writes();
+        let second_writes = wm.tabs.get(&2).unwrap()
+            .focused_pane().unwrap()
+            .session.recorded_writes();
+
+        assert!(first_writes.is_empty());
+        assert_eq!(second_writes, vec![b"echo one\recho two\r".to_vec()]);
     }
 }

@@ -12,6 +12,7 @@ A tmux-like terminal multiplexer for Windows, written in Rust.
 
 - **tmux-compatible keybindings** - Familiar `Ctrl+B` prefix commands
 - **Multiple tabs (windows)** - Create, switch, rename, and manage tabs
+- **Startup tabs** - Open multiple tabs on launch and run an initial command in each tab
 - **Split panes** - Horizontal and vertical splits with resize support
 - **Pane zoom** - Toggle full-screen for any pane (v0.4.0: seamless transitions)
 - **Layout presets** - 5 layouts (even-horizontal, even-vertical, main-horizontal, main-vertical, tiled)
@@ -298,7 +299,27 @@ blink = true
 # Scrollback buffer
 [scrollback]
 lines = 10000
+
+# Startup tabs
+[[startup.tabs]]
+name = "server"
+command = "npm run dev"
+
+[[startup.tabs]]
+name = "tests"
+command = "cargo test"
 ```
+
+### Startup Tabs
+
+Use `[[startup.tabs]]` to prepare a workspace automatically when `wtmux`
+starts.
+
+- The first entry reuses the initial tab that `wtmux` already creates.
+- Additional entries create additional tabs in order.
+- `name` is optional.
+- `command` is optional. If present, it is sent to the tab after the shell
+  starts and executed automatically.
 
 ### Font Settings
 

@@ -47,6 +47,12 @@ pub struct Session {
     /// Channel to receive PTY output
     #[cfg(windows)]
     output_rx: Option<Receiver<Vec<u8>>>,
+    /// Recorded writes for unit tests on non-Windows hosts
+    #[cfg(test)]
+    mock_writes: std::sync::Mutex<Vec<Vec<u8>>>,
+    /// Recorded start parameters for unit tests on non-Windows hosts
+    #[cfg(test)]
+    mock_starts: Vec<(Option<String>, Option<u32>)>,
 }
 
 // ConPty needs to be Send + Sync for Arc
@@ -68,6 +74,10 @@ impl Session {
             reader_thread: None,
             #[cfg(windows)]
             output_rx: None,
+            #[cfg(test)]
+            mock_writes: std::sync::Mutex::new(Vec::new()),
+            #[cfg(test)]
+            mock_starts: Vec::new(),
         }
     }
 
@@ -92,7 +102,11 @@ impl Session {
 
     /// Start the session with a shell command and specific codepage
     #[cfg(windows)]
-    pub fn start_with_codepage(&mut self, command: Option<&str>, codepage: Option<u32>) -> Result<(), PtyError> {
+    pub fn start_with_codepage(
+        &mut self,
+        command: Option<&str>,
+        codepage: Option<u32>,
+    ) -> Result<(), PtyError> {
         let (cols, rows) = (self.state.cols, self.state.rows);
         let pty = Arc::new(ConPty::new_with_codepage(cols, rows, command, codepage)?);
         self.pty = Some(pty.clone());
@@ -144,9 +158,38 @@ impl Session {
         Ok(())
     }
 
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), not(test)))]
     pub fn start(&mut self, _command: Option<&str>) -> Result<(), String> {
         Err("PTY is only supported on Windows".to_string())
+    }
+
+    /// Start the session with a shell command and specific codepage
+    #[cfg(all(not(windows), not(test)))]
+    pub fn start_with_codepage(
+        &mut self,
+        _command: Option<&str>,
+        _codepage: Option<u32>,
+    ) -> Result<(), String> {
+        Err("PTY is only supported on Windows".to_string())
+    }
+
+    /// Test-only non-Windows stub so window-manager logic can be unit tested.
+    #[cfg(all(not(windows), test))]
+    pub fn start(&mut self, command: Option<&str>) -> Result<(), String> {
+        self.start_with_codepage(command, None)
+    }
+
+    /// Test-only non-Windows stub so window-manager logic can be unit tested.
+    #[cfg(all(not(windows), test))]
+    pub fn start_with_codepage(
+        &mut self,
+        command: Option<&str>,
+        codepage: Option<u32>,
+    ) -> Result<(), String> {
+        self.running.store(true, Ordering::SeqCst);
+        self.mock_starts
+            .push((command.map(str::to_string), codepage));
+        Ok(())
     }
 
     /// Check if session is running
@@ -164,9 +207,16 @@ impl Session {
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), not(test)))]
     pub fn write(&self, _data: &[u8]) -> Result<usize, String> {
         Err("PTY is only supported on Windows".to_string())
+    }
+
+    /// Test-only non-Windows write stub that records bytes.
+    #[cfg(all(not(windows), test))]
+    pub fn write(&self, data: &[u8]) -> Result<usize, String> {
+        self.mock_writes.lock().unwrap().push(data.to_vec());
+        Ok(data.len())
     }
 
     /// Read and process output from PTY (non-blocking)
@@ -178,10 +228,10 @@ impl Session {
                 self.running.store(false, Ordering::SeqCst);
             }
         }
-        
+
         // First, collect all available data from the channel
         let mut all_data: Vec<Vec<u8>> = Vec::new();
-        
+
         if let Some(rx) = &self.output_rx {
             loop {
                 match rx.try_recv() {
@@ -215,6 +265,16 @@ impl Session {
         Ok(false)
     }
 
+    #[cfg(test)]
+    pub fn recorded_writes(&self) -> Vec<Vec<u8>> {
+        self.mock_writes.lock().unwrap().clone()
+    }
+
+    #[cfg(test)]
+    pub fn recorded_starts(&self) -> &[(Option<String>, Option<u32>)] {
+        &self.mock_starts
+    }
+
     /// Feed raw bytes into the terminal.
     ///
     /// ConPTY always outputs well-formed UTF-8.  We decode multi-byte sequences
@@ -227,8 +287,12 @@ impl Session {
         // VT trace: write raw bytes in hex + printable-ASCII annotation
         if let Some(ref mut w) = self.vt_trace {
             // Header: byte offset + hex dump
-            let _ = write!(w, "─── {} bytes ───
-", bytes.len());
+            let _ = write!(
+                w,
+                "─── {} bytes ───
+",
+                bytes.len()
+            );
             for (i, chunk) in bytes.chunks(16).enumerate() {
                 let _ = write!(w, "{:06X}  ", i * 16);
                 for b in chunk {
@@ -289,14 +353,17 @@ impl Session {
 
             // ── UTF-8 multi-byte path ────────────────────────────────────
             // Determine sequence length from the leading byte.
-            let seq_len: usize = if b & 0xE0 == 0xC0 { 2 }
-                else if b & 0xF0 == 0xE0 { 3 }
-                else if b & 0xF8 == 0xF0 { 4 }
-                else {
-                    // Lone continuation byte or invalid — skip.
-                    i += 1;
-                    continue;
-                };
+            let seq_len: usize = if b & 0xE0 == 0xC0 {
+                2
+            } else if b & 0xF0 == 0xE0 {
+                3
+            } else if b & 0xF8 == 0xF0 {
+                4
+            } else {
+                // Lone continuation byte or invalid — skip.
+                i += 1;
+                continue;
+            };
 
             if i + seq_len > bytes.len() {
                 // Truncated sequence at end of buffer — skip leading byte.

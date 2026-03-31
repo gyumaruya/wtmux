@@ -38,9 +38,9 @@
 //! - `gruvbox-dark` - Retro groove colors
 //! - `tokyo-night` - VS Code Tokyo Night theme
 
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
 
 /// Main configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +60,8 @@ pub struct Config {
     pub status_bar: StatusBarConfig,
     /// Pane border settings
     pub pane: PaneConfig,
+    /// Startup tabs and initial commands
+    pub startup: StartupConfig,
     /// Font settings
     pub font: FontConfig,
 }
@@ -74,9 +76,25 @@ impl Default for Config {
             tab_bar: TabBarConfig::default(),
             status_bar: StatusBarConfig::default(),
             pane: PaneConfig::default(),
+            startup: StartupConfig::default(),
             font: FontConfig::default(),
         }
     }
+}
+
+/// Startup tab configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct StartupConfig {
+    pub tabs: Vec<StartupTabConfig>,
+}
+
+/// Single startup tab definition
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct StartupTabConfig {
+    pub name: Option<String>,
+    pub command: Option<String>,
 }
 
 /// Parsed prefix key representation
@@ -99,7 +117,9 @@ impl PrefixKey {
         if s.len() == 3 && s.starts_with("C-") {
             let ch = s.chars().nth(2)?;
             if ch.is_ascii_alphabetic() {
-                return Some(Self { char: ch.to_ascii_lowercase() });
+                return Some(Self {
+                    char: ch.to_ascii_lowercase(),
+                });
             }
         }
         None
@@ -219,8 +239,7 @@ impl Config {
         if let Some(path) = Self::get_config_path() {
             let content = toml::to_string_pretty(self)
                 .map_err(|e| format!("Failed to serialize config: {}", e))?;
-            fs::write(&path, content)
-                .map_err(|e| format!("Failed to write config: {}", e))?;
+            fs::write(&path, content).map_err(|e| format!("Failed to write config: {}", e))?;
             Ok(())
         } else {
             Err("Could not determine config path".to_string())
@@ -243,7 +262,7 @@ impl Config {
 }
 
 /// Get wtmux data directory
-/// 
+///
 /// On Windows: `%LOCALAPPDATA%\wtmux` (e.g., `C:\Users\username\AppData\Local\wtmux`)
 /// Fallback: `~/.wtmux`
 pub fn get_data_dir() -> Option<PathBuf> {
@@ -252,13 +271,50 @@ pub fn get_data_dir() -> Option<PathBuf> {
         let path = PathBuf::from(local_app_data).join("wtmux");
         return Some(path);
     }
-    
+
     // Fallback to home directory
     if let Some(home) = home_dir() {
         return Some(home.join(".wtmux"));
     }
-    
+
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn test_default_startup_config_is_empty() {
+        let config = Config::default();
+        assert!(config.startup.tabs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_startup_tabs_from_toml() {
+        let config: Config = toml::from_str(
+            r#"
+                color_scheme = "tokyo-night"
+
+                [[startup.tabs]]
+                name = "server"
+                command = "npm run dev"
+
+                [[startup.tabs]]
+                name = "tests"
+            "#,
+        )
+        .expect("startup config should parse");
+
+        assert_eq!(config.startup.tabs.len(), 2);
+        assert_eq!(config.startup.tabs[0].name.as_deref(), Some("server"));
+        assert_eq!(
+            config.startup.tabs[0].command.as_deref(),
+            Some("npm run dev")
+        );
+        assert_eq!(config.startup.tabs[1].name.as_deref(), Some("tests"));
+        assert_eq!(config.startup.tabs[1].command, None);
+    }
 }
 
 /// Color definition (RGB)
@@ -288,7 +344,7 @@ impl Color {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColorScheme {
     pub name: String,
-    
+
     // Tab bar colors
     pub tab_bar_bg: Color,
     pub tab_bar_fg: Color,
@@ -296,21 +352,21 @@ pub struct ColorScheme {
     pub tab_active_fg: Color,
     pub tab_inactive_bg: Color,
     pub tab_inactive_fg: Color,
-    
+
     // Status bar colors
     pub status_bar_bg: Color,
     pub status_bar_fg: Color,
     pub status_prefix_bg: Color,
     pub status_prefix_fg: Color,
-    
+
     // Pane colors
     pub pane_border: Color,
     pub pane_border_active: Color,
-    
+
     // Selection colors
     pub selection_bg: Color,
     pub selection_fg: Color,
-    
+
     // History selector colors
     pub selector_bg: Color,
     pub selector_fg: Color,
@@ -330,7 +386,7 @@ impl ColorScheme {
     pub fn default_scheme() -> Self {
         Self {
             name: "default".to_string(),
-            
+
             // Tab bar - dark gray background
             tab_bar_bg: Color::new(40, 40, 40),
             tab_bar_fg: Color::new(180, 180, 180),
@@ -338,21 +394,21 @@ impl ColorScheme {
             tab_active_fg: Color::new(255, 255, 255),
             tab_inactive_bg: Color::new(60, 60, 60),
             tab_inactive_fg: Color::new(150, 150, 150),
-            
+
             // Status bar - blue
             status_bar_bg: Color::new(0, 100, 0),
             status_bar_fg: Color::new(255, 255, 255),
             status_prefix_bg: Color::new(200, 200, 0),
             status_prefix_fg: Color::new(0, 0, 0),
-            
+
             // Pane borders
             pane_border: Color::new(80, 80, 80),
             pane_border_active: Color::new(100, 150, 255),
-            
+
             // Selection
             selection_bg: Color::new(255, 255, 255),
             selection_fg: Color::new(0, 0, 0),
-            
+
             // History selector
             selector_bg: Color::new(0, 0, 139),
             selector_fg: Color::new(255, 255, 255),
@@ -366,25 +422,25 @@ impl ColorScheme {
     pub fn solarized_dark() -> Self {
         Self {
             name: "solarized-dark".to_string(),
-            
+
             tab_bar_bg: Color::new(0, 43, 54),
             tab_bar_fg: Color::new(147, 161, 161),
             tab_active_bg: Color::new(38, 139, 210),
             tab_active_fg: Color::new(253, 246, 227),
             tab_inactive_bg: Color::new(7, 54, 66),
             tab_inactive_fg: Color::new(101, 123, 131),
-            
+
             status_bar_bg: Color::new(7, 54, 66),
             status_bar_fg: Color::new(147, 161, 161),
             status_prefix_bg: Color::new(181, 137, 0),
             status_prefix_fg: Color::new(0, 43, 54),
-            
+
             pane_border: Color::new(7, 54, 66),
             pane_border_active: Color::new(38, 139, 210),
-            
+
             selection_bg: Color::new(38, 139, 210),
             selection_fg: Color::new(253, 246, 227),
-            
+
             selector_bg: Color::new(0, 43, 54),
             selector_fg: Color::new(147, 161, 161),
             selector_selected_bg: Color::new(38, 139, 210),
@@ -397,25 +453,25 @@ impl ColorScheme {
     pub fn solarized_light() -> Self {
         Self {
             name: "solarized-light".to_string(),
-            
+
             tab_bar_bg: Color::new(253, 246, 227),
             tab_bar_fg: Color::new(101, 123, 131),
             tab_active_bg: Color::new(38, 139, 210),
             tab_active_fg: Color::new(253, 246, 227),
             tab_inactive_bg: Color::new(238, 232, 213),
             tab_inactive_fg: Color::new(88, 110, 117),
-            
+
             status_bar_bg: Color::new(238, 232, 213),
             status_bar_fg: Color::new(101, 123, 131),
             status_prefix_bg: Color::new(181, 137, 0),
             status_prefix_fg: Color::new(253, 246, 227),
-            
+
             pane_border: Color::new(238, 232, 213),
             pane_border_active: Color::new(38, 139, 210),
-            
+
             selection_bg: Color::new(38, 139, 210),
             selection_fg: Color::new(253, 246, 227),
-            
+
             selector_bg: Color::new(253, 246, 227),
             selector_fg: Color::new(101, 123, 131),
             selector_selected_bg: Color::new(38, 139, 210),
@@ -428,25 +484,25 @@ impl ColorScheme {
     pub fn monokai() -> Self {
         Self {
             name: "monokai".to_string(),
-            
+
             tab_bar_bg: Color::new(39, 40, 34),
             tab_bar_fg: Color::new(248, 248, 242),
             tab_active_bg: Color::new(166, 226, 46),
             tab_active_fg: Color::new(39, 40, 34),
             tab_inactive_bg: Color::new(60, 60, 54),
             tab_inactive_fg: Color::new(150, 150, 140),
-            
+
             status_bar_bg: Color::new(60, 60, 54),
             status_bar_fg: Color::new(248, 248, 242),
             status_prefix_bg: Color::new(249, 38, 114),
             status_prefix_fg: Color::new(248, 248, 242),
-            
+
             pane_border: Color::new(60, 60, 54),
             pane_border_active: Color::new(166, 226, 46),
-            
+
             selection_bg: Color::new(73, 72, 62),
             selection_fg: Color::new(248, 248, 242),
-            
+
             selector_bg: Color::new(39, 40, 34),
             selector_fg: Color::new(248, 248, 242),
             selector_selected_bg: Color::new(166, 226, 46),
@@ -459,25 +515,25 @@ impl ColorScheme {
     pub fn nord() -> Self {
         Self {
             name: "nord".to_string(),
-            
+
             tab_bar_bg: Color::new(46, 52, 64),
             tab_bar_fg: Color::new(216, 222, 233),
             tab_active_bg: Color::new(136, 192, 208),
             tab_active_fg: Color::new(46, 52, 64),
             tab_inactive_bg: Color::new(59, 66, 82),
             tab_inactive_fg: Color::new(147, 161, 181),
-            
+
             status_bar_bg: Color::new(59, 66, 82),
             status_bar_fg: Color::new(216, 222, 233),
             status_prefix_bg: Color::new(163, 190, 140),
             status_prefix_fg: Color::new(46, 52, 64),
-            
+
             pane_border: Color::new(59, 66, 82),
             pane_border_active: Color::new(136, 192, 208),
-            
+
             selection_bg: Color::new(76, 86, 106),
             selection_fg: Color::new(236, 239, 244),
-            
+
             selector_bg: Color::new(46, 52, 64),
             selector_fg: Color::new(216, 222, 233),
             selector_selected_bg: Color::new(136, 192, 208),
@@ -490,25 +546,25 @@ impl ColorScheme {
     pub fn dracula() -> Self {
         Self {
             name: "dracula".to_string(),
-            
+
             tab_bar_bg: Color::new(40, 42, 54),
             tab_bar_fg: Color::new(248, 248, 242),
             tab_active_bg: Color::new(189, 147, 249),
             tab_active_fg: Color::new(40, 42, 54),
             tab_inactive_bg: Color::new(68, 71, 90),
             tab_inactive_fg: Color::new(98, 114, 164),
-            
+
             status_bar_bg: Color::new(68, 71, 90),
             status_bar_fg: Color::new(248, 248, 242),
             status_prefix_bg: Color::new(80, 250, 123),
             status_prefix_fg: Color::new(40, 42, 54),
-            
+
             pane_border: Color::new(68, 71, 90),
             pane_border_active: Color::new(189, 147, 249),
-            
+
             selection_bg: Color::new(68, 71, 90),
             selection_fg: Color::new(248, 248, 242),
-            
+
             selector_bg: Color::new(40, 42, 54),
             selector_fg: Color::new(248, 248, 242),
             selector_selected_bg: Color::new(189, 147, 249),
@@ -521,25 +577,25 @@ impl ColorScheme {
     pub fn gruvbox_dark() -> Self {
         Self {
             name: "gruvbox-dark".to_string(),
-            
+
             tab_bar_bg: Color::new(40, 40, 40),
             tab_bar_fg: Color::new(235, 219, 178),
             tab_active_bg: Color::new(215, 153, 33),
             tab_active_fg: Color::new(40, 40, 40),
             tab_inactive_bg: Color::new(60, 56, 54),
             tab_inactive_fg: Color::new(168, 153, 132),
-            
+
             status_bar_bg: Color::new(60, 56, 54),
             status_bar_fg: Color::new(235, 219, 178),
             status_prefix_bg: Color::new(152, 151, 26),
             status_prefix_fg: Color::new(40, 40, 40),
-            
+
             pane_border: Color::new(60, 56, 54),
             pane_border_active: Color::new(215, 153, 33),
-            
+
             selection_bg: Color::new(102, 92, 84),
             selection_fg: Color::new(235, 219, 178),
-            
+
             selector_bg: Color::new(40, 40, 40),
             selector_fg: Color::new(235, 219, 178),
             selector_selected_bg: Color::new(215, 153, 33),
@@ -552,25 +608,25 @@ impl ColorScheme {
     pub fn tokyo_night() -> Self {
         Self {
             name: "tokyo-night".to_string(),
-            
+
             tab_bar_bg: Color::new(26, 27, 38),
             tab_bar_fg: Color::new(169, 177, 214),
             tab_active_bg: Color::new(122, 162, 247),
             tab_active_fg: Color::new(26, 27, 38),
             tab_inactive_bg: Color::new(36, 40, 59),
             tab_inactive_fg: Color::new(86, 95, 137),
-            
+
             status_bar_bg: Color::new(36, 40, 59),
             status_bar_fg: Color::new(169, 177, 214),
             status_prefix_bg: Color::new(158, 206, 106),
             status_prefix_fg: Color::new(26, 27, 38),
-            
+
             pane_border: Color::new(41, 46, 66),
             pane_border_active: Color::new(122, 162, 247),
-            
+
             selection_bg: Color::new(51, 59, 91),
             selection_fg: Color::new(192, 202, 245),
-            
+
             selector_bg: Color::new(26, 27, 38),
             selector_fg: Color::new(169, 177, 214),
             selector_selected_bg: Color::new(122, 162, 247),

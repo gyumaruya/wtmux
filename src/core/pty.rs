@@ -3,24 +3,33 @@
 //! This module provides a safe wrapper around Windows ConPTY (Console Pseudo Terminal)
 //! for creating and managing pseudo-terminal sessions.
 
-use std::io;
 use thiserror::Error;
 
+#[cfg(windows)]
+use std::io;
+#[cfg(windows)]
+use windows::core::{PCWSTR, PWSTR};
+#[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+#[cfg(windows)]
 use windows::Win32::System::Console::{
     ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
 };
+#[cfg(windows)]
 use windows::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
+#[cfg(windows)]
 use windows::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
     InitializeProcThreadAttributeList, UpdateProcThreadAttribute, WaitForSingleObject,
     EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
     STARTUPINFOEXW,
 };
+#[cfg(windows)]
 use windows::Win32::System::IO::CancelIoEx;
-use windows::core::{PCWSTR, PWSTR};
 
+#[cfg(windows)]
 #[derive(Error, Debug)]
 pub enum PtyError {
     #[error("Failed to create pipe: {0}")]
@@ -50,9 +59,17 @@ pub enum PtyError {
     InvalidHandle,
 }
 
+#[cfg(not(windows))]
+#[derive(Error, Debug)]
+pub enum PtyError {
+    #[error("PTY is only supported on Windows")]
+    Unsupported,
+}
+
 pub type Result<T> = std::result::Result<T, PtyError>;
 
 /// ConPTY handle wrapper
+#[cfg(windows)]
 pub struct ConPty {
     hpc: HPCON,
     input_write: HANDLE,
@@ -64,9 +81,14 @@ pub struct ConPty {
     rows: u16,
 }
 
+#[cfg(not(windows))]
+pub struct ConPty;
+
 // Safety: ConPty handles are thread-safe when accessed properly
+#[cfg(windows)]
 unsafe impl Send for ConPty {}
 
+#[cfg(windows)]
 impl ConPty {
     /// Create a new ConPTY instance and spawn a shell
     #[allow(dead_code)]
@@ -75,11 +97,21 @@ impl ConPty {
     }
 
     /// Create a new ConPTY instance with specific codepage
-    pub fn new_with_codepage(cols: u16, rows: u16, command: Option<&str>, codepage: Option<u32>) -> Result<Self> {
+    pub fn new_with_codepage(
+        cols: u16,
+        rows: u16,
+        command: Option<&str>,
+        codepage: Option<u32>,
+    ) -> Result<Self> {
         unsafe { Self::create_internal(cols, rows, command, codepage) }
     }
 
-    unsafe fn create_internal(cols: u16, rows: u16, command: Option<&str>, codepage: Option<u32>) -> Result<Self> {
+    unsafe fn create_internal(
+        cols: u16,
+        rows: u16,
+        command: Option<&str>,
+        codepage: Option<u32>,
+    ) -> Result<Self> {
         // Create pipes for PTY communication
         let mut pty_input_read = HANDLE::default();
         let mut pty_input_write = HANDLE::default();
@@ -247,21 +279,14 @@ impl ConPty {
     pub fn read(&self, buffer: &mut [u8]) -> Result<usize> {
         // First check if there's data available using PeekNamedPipe
         let mut available: u32 = 0;
-        
+
         unsafe {
             // Check how many bytes are available
-            if PeekNamedPipe(
-                self.output_read,
-                None,
-                0,
-                None,
-                Some(&mut available),
-                None,
-            ).is_err() {
+            if PeekNamedPipe(self.output_read, None, 0, None, Some(&mut available), None).is_err() {
                 // Pipe error - likely process exited
                 return Err(PtyError::Read(io::Error::new(
                     io::ErrorKind::BrokenPipe,
-                    "Pipe closed"
+                    "Pipe closed",
                 )));
             }
         }
@@ -276,8 +301,13 @@ impl ConPty {
         let mut read: u32 = 0;
 
         unsafe {
-            ReadFile(self.output_read, Some(&mut buffer[..to_read]), Some(&mut read), None)
-                .map_err(|e| PtyError::Read(io::Error::from_raw_os_error(e.code().0 as i32)))?;
+            ReadFile(
+                self.output_read,
+                Some(&mut buffer[..to_read]),
+                Some(&mut read),
+                None,
+            )
+            .map_err(|e| PtyError::Read(io::Error::from_raw_os_error(e.code().0 as i32)))?;
         }
 
         Ok(read as usize)
@@ -328,6 +358,24 @@ impl ConPty {
     }
 }
 
+#[cfg(not(windows))]
+impl ConPty {
+    #[allow(dead_code)]
+    pub fn new(_cols: u16, _rows: u16, _command: Option<&str>) -> Result<Self> {
+        Err(PtyError::Unsupported)
+    }
+
+    pub fn new_with_codepage(
+        _cols: u16,
+        _rows: u16,
+        _command: Option<&str>,
+        _codepage: Option<u32>,
+    ) -> Result<Self> {
+        Err(PtyError::Unsupported)
+    }
+}
+
+#[cfg(windows)]
 impl Drop for ConPty {
     fn drop(&mut self) {
         unsafe {
@@ -343,12 +391,11 @@ impl Drop for ConPty {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
     #[test]
-    #[cfg(windows)]
     fn test_conpty_creation() {
         let pty = ConPty::new(80, 24, Some("cmd.exe /c echo hello"));
         assert!(pty.is_ok());
