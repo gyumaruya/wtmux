@@ -36,3 +36,16 @@ layout and documentation in this repository.
 - Run `cargo test`.
 - For Windows-only PTY behavior, keep as much as possible covered by pure unit
   tests and record any manual verification evidence separately when needed.
+
+## Local Safety
+
+- Repo-local git hooks live in `.githooks/`.
+- Install them with `scripts/install-local-hooks.sh`, which sets
+  `core.hooksPath` in local git config.
+- Secret scanning is two-layered:
+  - `betterleaks` for general secrets
+  - `scripts/check-sensitive-changes.sh` for local machine leakage such as
+    IP addresses, Windows product-key patterns, home-directory paths, and
+    locally configured sensitive terms
+- Add extra local usernames or machine-specific values with:
+  `git config --local --add codex.sensitiveTerm <value>`

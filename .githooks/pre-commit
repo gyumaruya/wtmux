@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if ! command -v betterleaks >/dev/null 2>&1; then
+  echo "betterleaks is required for secret scanning." >&2
+  echo "Install: https://github.com/leaktk/betterleaks" >&2
+  exit 1
+fi
+
+betterleaks git --staged --redact
+"$repo_root/scripts/check-sensitive-changes.sh" --staged
