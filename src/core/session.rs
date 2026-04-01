@@ -173,19 +173,38 @@ impl Session {
         Err("PTY is only supported on Windows".to_string())
     }
 
-    /// Test-only stub so window-manager logic can be unit tested without a PTY.
-    #[cfg(test)]
+    /// Test-only non-Windows stub so window-manager logic can be unit tested.
+    #[cfg(all(not(windows), test))]
     pub fn start(&mut self, command: Option<&str>) -> Result<(), String> {
         self.start_with_codepage(command, None)
     }
 
-    /// Test-only stub so window-manager logic can be unit tested without a PTY.
-    #[cfg(test)]
+    /// Test-only non-Windows stub so window-manager logic can be unit tested.
+    #[cfg(all(not(windows), test))]
     pub fn start_with_codepage(
         &mut self,
         command: Option<&str>,
         codepage: Option<u32>,
     ) -> Result<(), String> {
+        self.running.store(true, Ordering::SeqCst);
+        self.mock_starts
+            .push((command.map(str::to_string), codepage));
+        Ok(())
+    }
+
+    /// Test-only Windows stub so unit tests do not depend on a live PTY.
+    #[cfg(all(windows, test))]
+    pub fn start(&mut self, command: Option<&str>) -> Result<(), PtyError> {
+        self.start_with_codepage(command, None)
+    }
+
+    /// Test-only Windows stub so unit tests do not depend on a live PTY.
+    #[cfg(all(windows, test))]
+    pub fn start_with_codepage(
+        &mut self,
+        command: Option<&str>,
+        codepage: Option<u32>,
+    ) -> Result<(), PtyError> {
         self.running.store(true, Ordering::SeqCst);
         self.mock_starts
             .push((command.map(str::to_string), codepage));
@@ -212,9 +231,16 @@ impl Session {
         Err("PTY is only supported on Windows".to_string())
     }
 
-    /// Test-only write stub that records bytes instead of touching a PTY.
-    #[cfg(test)]
+    /// Test-only non-Windows write stub that records bytes.
+    #[cfg(all(not(windows), test))]
     pub fn write(&self, data: &[u8]) -> Result<usize, String> {
+        self.mock_writes.lock().unwrap().push(data.to_vec());
+        Ok(data.len())
+    }
+
+    /// Test-only Windows write stub that records bytes instead of touching a PTY.
+    #[cfg(all(windows, test))]
+    pub fn write(&self, data: &[u8]) -> Result<usize, PtyError> {
         self.mock_writes.lock().unwrap().push(data.to_vec());
         Ok(data.len())
     }
