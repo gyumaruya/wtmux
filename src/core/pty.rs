@@ -501,4 +501,54 @@ mod tests {
 
         panic!("cmd.exe did not finish compound command input");
     }
+
+    #[test]
+    fn test_conpty_executes_compound_cmd_input_bytewise() {
+        let marker_dir =
+            std::env::temp_dir().join(format!("wtmux-conpty-bytewise-{}", std::process::id()));
+        let marker_path = marker_dir.join("marker.txt");
+        let _ = std::fs::remove_file(&marker_path);
+        std::fs::create_dir_all(&marker_dir).expect("temp marker dir should exist");
+
+        let pty = ConPty::new_with_codepage(80, 24, Some("cmd.exe"), Some(65001))
+            .expect("cmd.exe PTY should start");
+        let mut buffer = [0u8; 4096];
+        let ready_deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_output = false;
+
+        while Instant::now() < ready_deadline {
+            if let Ok(n) = pty.read(&mut buffer) {
+                if n > 0 {
+                    saw_output = true;
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(saw_output, "cmd.exe never produced initial output");
+
+        let command = format!(
+            "echo conpty-bytewise>\"{}\" && exit\r",
+            marker_path.display()
+        );
+        for byte in command.as_bytes() {
+            pty.write(&[*byte]).expect("bytewise input should be written");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        let exit_deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < exit_deadline {
+            if !pty.is_running() {
+                assert_eq!(pty.exit_code(), Some(0));
+                let content = std::fs::read_to_string(&marker_path)
+                    .expect("bytewise compound command should create marker file");
+                assert_eq!(content.trim(), "conpty-bytewise");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        panic!("cmd.exe did not finish bytewise compound command input");
+    }
 }
