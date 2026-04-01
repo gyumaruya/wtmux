@@ -156,15 +156,33 @@ if ($EnableVtTrace) {
     $wtmuxArgs += "--vt-trace"
 }
 
-$argSuffix = if ($wtmuxArgs.Count -gt 0) {
-    " " + ($wtmuxArgs -join " ")
-} else {
-    ""
-}
+$previousLocalAppData = $env:LOCALAPPDATA
+$previousHeadless = $env:WTMUX_HEADLESS
+$env:LOCALAPPDATA = $LocalAppDataRoot
+$env:WTMUX_HEADLESS = "1"
 
-$commandLine = 'set "LOCALAPPDATA={0}" && set "WTMUX_HEADLESS=1" && "{1}"{2}' -f $LocalAppDataRoot, $WtmuxExe, $argSuffix
-$process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $commandLine -NoNewWindow -PassThru
-$finished = $process.WaitForExit($TimeoutSec * 1000)
+try {
+    $process = Start-Process -FilePath $WtmuxExe `
+        -ArgumentList $wtmuxArgs `
+        -WorkingDirectory (Split-Path -Parent $WtmuxExe) `
+        -PassThru
+    $finished = $process.WaitForExit($TimeoutSec * 1000)
+}
+finally {
+    if ($null -ne $previousLocalAppData) {
+        $env:LOCALAPPDATA = $previousLocalAppData
+    }
+    else {
+        Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue
+    }
+
+    if ($null -ne $previousHeadless) {
+        $env:WTMUX_HEADLESS = $previousHeadless
+    }
+    else {
+        Remove-Item Env:WTMUX_HEADLESS -ErrorAction SilentlyContinue
+    }
+}
 
 $timedOut = $false
 if (-not $finished) {
