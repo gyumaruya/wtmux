@@ -83,8 +83,10 @@ cargo test
 
 結果:
 
-- `13 passed; 0 failed`
-- Windows 固有の `core::pty::tests::test_conpty_creation` を含めて成功
+- `16 passed; 0 failed`
+- Windows 固有の `core::pty::tests::test_conpty_creation`
+- Windows 固有の `core::pty::tests::test_conpty_accepts_written_exit_input`
+- startup tabs 用に追加した quiet-period 判定 test を含めて成功
 
 2026-04-01 実行:
 
@@ -108,23 +110,38 @@ cargo build --release
 2026-04-01 実行:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\smoke-startup-tabs.ps1 -WtmuxExe .\target\release\wtmux.exe -Shell cmd
+powershell -ExecutionPolicy Bypass -File .\scripts\smoke-startup-tabs.ps1 -WtmuxExe .\target\release\wtmux.exe -Shell cmd -TabCount 1 -EnableVtTrace -RunRoot C:\Temp\startup-smoke-cmd-1b
+powershell -ExecutionPolicy Bypass -File .\scripts\smoke-startup-tabs.ps1 -WtmuxExe .\target\release\wtmux.exe -Shell cmd -TabCount 2 -EnableVtTrace -RunRoot C:\Temp\startup-smoke-cmd-2
+powershell -ExecutionPolicy Bypass -File .\scripts\smoke-startup-tabs.ps1 -WtmuxExe .\target\release\wtmux.exe -Shell pwsh -TabCount 1 -EnableVtTrace -RunRoot C:\Temp\startup-smoke-pwsh-1
+powershell -ExecutionPolicy Bypass -File .\scripts\smoke-startup-tabs.ps1 -WtmuxExe .\target\release\wtmux.exe -Shell pwsh -TabCount 2 -EnableVtTrace -RunRoot C:\Temp\startup-smoke-pwsh-2
 ```
 
 結果:
 
-- 失敗
-- タブ生成自体は見える
-- ただし marker file が生成されない
-- `WTMUX_DEBUG_STARTUP_TABS=1` 付きの再実行では、
-  - tab 1 command は pending のまま close 済みタブとして drop
-  - tab 2 command は dispatch されたが marker file は生成されない
+- 4 パターンすべて成功
+- `cmd.exe` で 1 tab / 2 tabs の marker file 生成を確認
+- `pwsh.exe` で 1 tab / 2 tabs の marker file 生成を確認
+- すべて `exitCode = 0`
+- すべて `vt_trace.log` と `report.json` を保存
+
+途中で解消した問題:
+
+- 非対話の `prlctl exec` 配下では `input redirection is not supported` で
+  main loop が落ちていた
+- これは `WTMUX_HEADLESS=1` を導入して解消済み
+- `cmd.exe /k "chcp 65001 >nul"` の初期出力だけで ready 判定すると、
+  shell の起動が落ち着く前に初期コマンドを送ってしまう
+- これは shell 出力が一定時間静かになってから dispatch する形に変更して解消
+- さらに smoke script が `cmd /c "wtmux.exe"` 経由で GUI プロセスを
+  正しく待てていなかった
+- これは `wtmux.exe` を直接 `Start-Process` して待つ形に変更して解消
 
 判断:
 
 - Windows ARM 上の build / unit test 基盤は整った
-- しかし startup tabs の実挙動は、まだ実機 smoke を通っていない
-- upstream 向けにはこの failure を解消してから進めるべき
+- 非対話 smoke を成立させる `headless` 経路は入った
+- startup tabs の実挙動は `cmd.exe` / `pwsh.exe` とも実スモークを通過した
+- Parallels ARM 上では今回の主要機能は検証済み
 
 ## まだできていないこと
 
@@ -132,13 +149,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\smoke-startup-tabs.ps1 -Wtmux
 
 未完了:
 
-- `cmd.exe` smoke の成功
-- `pwsh.exe` smoke の成功
-- `--vt-trace` を含む成功証跡回収
+- `x64 Windows` での build / 実行証跡
+- 可能なら RDP での目視確認
+- 必要なら `wsl.exe` を含む追加 shell 観点
 
 必要条件:
 
-- startup command dispatch の実機 failure 解消
 - `x64 Windows` での build / 実行経路
 - もしくは Parallels 側に `x64` ゲストを用意する
 - あるいは既存のリモート `x64 Windows` を SSH で操作する
@@ -157,9 +173,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\smoke-startup-tabs.ps1 -Wtmux
 
 - 設計、実装、unit test、設定例、検証計画は揃っている
 - macOS 上の純ロジック検証は通っている
-- Windows ARM 上で `cargo test` / `cargo build --release` までは通った
-- ただし startup tabs の実スモークは失敗している
-- 加えて upstream 向けには、まだ `x64 Windows` の実行証跡も不足している
+- Windows ARM 上で `cargo test` / `cargo build --release` が通った
+- Windows ARM 上で `cmd.exe` / `pwsh.exe` の startup tabs smoke が通った
+- upstream 向けには、まだ `x64 Windows` の実行証跡が不足している
 
 ## 個人用 PR の使い方
 
