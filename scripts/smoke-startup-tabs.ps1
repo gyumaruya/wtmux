@@ -19,6 +19,9 @@ param(
     [ValidateSet("cmd", "pwsh")]
     [string]$Shell = "cmd",
 
+    [ValidateRange(1, 2)]
+    [int]$TabCount = 2,
+
     [int]$TimeoutSec = 30,
 
     [string]$RunRoot = "",
@@ -45,38 +48,67 @@ function New-IsolatedRunRoot {
 function New-CommandSet {
     param(
         [string]$ShellName,
-        [string]$MarkerDir
+        [string]$MarkerDir,
+        [int]$RequestedTabCount
     )
 
-    $tab1Marker = Join-Path $MarkerDir "tab1.txt"
-    $tab2Marker = Join-Path $MarkerDir "tab2.txt"
+    $cmdTabs = @(
+        @{
+            Name = "server"
+            Marker = (Join-Path $MarkerDir "tab1.txt")
+            Expected = "tab1-startup"
+            CommandTemplate = 'echo tab1-startup>"{0}" && exit'
+        },
+        @{
+            Name = "tests"
+            Marker = (Join-Path $MarkerDir "tab2.txt")
+            Expected = "tab2-startup"
+            CommandTemplate = 'echo tab2-startup>"{0}" && exit'
+        }
+    )
+
+    $pwshTabs = @(
+        @{
+            Name = "server"
+            Marker = (Join-Path $MarkerDir "tab1.txt")
+            Expected = "tab1-startup"
+            CommandTemplate = 'Set-Content -Path "{0}" -Value "tab1-startup"; exit'
+        },
+        @{
+            Name = "tests"
+            Marker = (Join-Path $MarkerDir "tab2.txt")
+            Expected = "tab2-startup"
+            CommandTemplate = 'Set-Content -Path "{0}" -Value "tab2-startup"; exit'
+        }
+    )
 
     switch ($ShellName) {
         "cmd" {
-            return @{
-                ShellCommand = "cmd.exe"
-                Tab1 = "echo tab1-startup>""$tab1Marker"" && exit"
-                Tab2 = "echo tab2-startup>""$tab2Marker"" && exit"
-                Tab1Expected = "tab1-startup"
-                Tab2Expected = "tab2-startup"
-                Tab1Marker = $tab1Marker
-                Tab2Marker = $tab2Marker
-            }
+            $shellCommand = "cmd.exe"
+            $tabTemplates = $cmdTabs
         }
         "pwsh" {
-            return @{
-                ShellCommand = "pwsh.exe"
-                Tab1 = "Set-Content -Path ""$tab1Marker"" -Value ""tab1-startup""; exit"
-                Tab2 = "Set-Content -Path ""$tab2Marker"" -Value ""tab2-startup""; exit"
-                Tab1Expected = "tab1-startup"
-                Tab2Expected = "tab2-startup"
-                Tab1Marker = $tab1Marker
-                Tab2Marker = $tab2Marker
-            }
+            $shellCommand = "pwsh.exe"
+            $tabTemplates = $pwshTabs
         }
         default {
             throw "Unsupported shell: $ShellName"
         }
+    }
+
+    $tabs = @()
+    foreach ($tabTemplate in ($tabTemplates | Select-Object -First $RequestedTabCount)) {
+        $tabs += @{
+            Name = $tabTemplate.Name
+            Marker = $tabTemplate.Marker
+            Expected = $tabTemplate.Expected
+            Command = [string]::Format($tabTemplate.CommandTemplate, $tabTemplate.Marker)
+        }
+    }
+
+    return @{
+        ShellCommand = $shellCommand
+        Tabs = $tabs
     }
 }
 
@@ -100,20 +132,22 @@ $ConfigPath = Join-Path $ConfigDir "config.toml"
 New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
 New-Item -ItemType Directory -Force -Path $MarkerDir | Out-Null
 
-$commands = New-CommandSet -ShellName $Shell -MarkerDir $MarkerDir
+$commands = New-CommandSet -ShellName $Shell -MarkerDir $MarkerDir -RequestedTabCount $TabCount
 
-$config = @"
-shell = "$(Escape-TomlString $commands.ShellCommand)"
-color_scheme = "default"
+$configLines = @(
+    "shell = ""$(Escape-TomlString $commands.ShellCommand)""",
+    'color_scheme = "default"',
+    ""
+)
 
-[[startup.tabs]]
-name = "server"
-command = "$(Escape-TomlString $commands.Tab1)"
+foreach ($tab in $commands.Tabs) {
+    $configLines += '[[startup.tabs]]'
+    $configLines += "name = ""$(Escape-TomlString $tab.Name)"""
+    $configLines += "command = ""$(Escape-TomlString $tab.Command)"""
+    $configLines += ""
+}
 
-[[startup.tabs]]
-name = "tests"
-command = "$(Escape-TomlString $commands.Tab2)"
-"@
+$config = [string]::Join([Environment]::NewLine, $configLines)
 
 Set-Content -Path $ConfigPath -Value $config -Encoding UTF8
 
@@ -138,32 +172,48 @@ if (-not $finished) {
     Stop-Process -Id $process.Id -Force
 }
 
-$tab1Exists = Test-Path $commands.Tab1Marker
-$tab2Exists = Test-Path $commands.Tab2Marker
-$tab1Content = if ($tab1Exists) { (Get-Content -Path $commands.Tab1Marker -Raw).Trim() } else { $null }
-$tab2Content = if ($tab2Exists) { (Get-Content -Path $commands.Tab2Marker -Raw).Trim() } else { $null }
+$tabResults = @()
+foreach ($tab in $commands.Tabs) {
+    $exists = Test-Path $tab.Marker
+    $content = if ($exists) { (Get-Content -Path $tab.Marker -Raw).Trim() } else { $null }
+
+    $tabResults += [ordered]@{
+        name = $tab.Name
+        marker = $tab.Marker
+        expected = $tab.Expected
+        exists = $exists
+        content = $content
+        passed = $exists -and ($content -eq $tab.Expected)
+    }
+}
+
 $vtTracePath = Join-Path $ConfigDir "vt_trace.log"
+
+$passed = -not $timedOut
+foreach ($tabResult in $tabResults) {
+    $passed = $passed -and $tabResult.passed
+}
 
 $report = [ordered]@{
     shell = $Shell
+    tabCount = $TabCount
     wtmuxExe = (Resolve-Path $WtmuxExe).Path
     runRoot = $RunRoot
     localAppData = $LocalAppDataRoot
     configPath = $ConfigPath
     markerDir = $MarkerDir
-    tab1Marker = $commands.Tab1Marker
-    tab2Marker = $commands.Tab2Marker
+    tab1Marker = if ($tabResults.Count -ge 1) { $tabResults[0].marker } else { $null }
+    tab2Marker = if ($tabResults.Count -ge 2) { $tabResults[1].marker } else { $null }
     timedOut = $timedOut
     exitCode = if ($finished) { $process.ExitCode } else { $null }
-    tab1Exists = $tab1Exists
-    tab2Exists = $tab2Exists
-    tab1Content = $tab1Content
-    tab2Content = $tab2Content
+    tab1Exists = if ($tabResults.Count -ge 1) { $tabResults[0].exists } else { $null }
+    tab2Exists = if ($tabResults.Count -ge 2) { $tabResults[1].exists } else { $null }
+    tab1Content = if ($tabResults.Count -ge 1) { $tabResults[0].content } else { $null }
+    tab2Content = if ($tabResults.Count -ge 2) { $tabResults[1].content } else { $null }
+    tabs = $tabResults
     vtTraceEnabled = [bool]$EnableVtTrace
     vtTracePath = if (Test-Path $vtTracePath) { $vtTracePath } else { $null }
-    passed = (-not $timedOut) -and $tab1Exists -and $tab2Exists `
-        -and ($tab1Content -eq $commands.Tab1Expected) `
-        -and ($tab2Content -eq $commands.Tab2Expected)
+    passed = $passed
 }
 
 $report | ConvertTo-Json -Depth 4 | Set-Content -Path $ReportPath -Encoding UTF8
