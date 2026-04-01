@@ -41,6 +41,8 @@ pub struct Session {
     pty: Option<Arc<ConPty>>,
     /// Running flag
     running: Arc<AtomicBool>,
+    /// True once the child shell has emitted any output.
+    startup_input_ready: bool,
     /// Reader thread handle
     #[cfg(windows)]
     reader_thread: Option<JoinHandle<()>>,
@@ -70,6 +72,7 @@ impl Session {
             #[cfg(windows)]
             pty: None,
             running: Arc::new(AtomicBool::new(false)),
+            startup_input_ready: false,
             #[cfg(windows)]
             reader_thread: None,
             #[cfg(windows)]
@@ -187,6 +190,7 @@ impl Session {
         codepage: Option<u32>,
     ) -> Result<(), String> {
         self.running.store(true, Ordering::SeqCst);
+        self.startup_input_ready = true;
         self.mock_starts
             .push((command.map(str::to_string), codepage));
         Ok(())
@@ -206,6 +210,7 @@ impl Session {
         codepage: Option<u32>,
     ) -> Result<(), PtyError> {
         self.running.store(true, Ordering::SeqCst);
+        self.startup_input_ready = true;
         self.mock_starts
             .push((command.map(str::to_string), codepage));
         Ok(())
@@ -214,6 +219,12 @@ impl Session {
     /// Check if session is running
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+
+    /// Returns true once the shell has produced enough output that sending
+    /// startup input is unlikely to race its initialization.
+    pub fn startup_input_ready(&self) -> bool {
+        self.startup_input_ready
     }
 
     /// Write input to the PTY
@@ -310,6 +321,10 @@ impl Session {
     /// were written as visible characters even when the parser was inside a
     /// string-body state (DCS, APC, …) that should consume them silently.
     pub fn feed_bytes(&mut self, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            self.startup_input_ready = true;
+        }
+
         // VT trace: write raw bytes in hex + printable-ASCII annotation
         if let Some(ref mut w) = self.vt_trace {
             // Header: byte offset + hex dump

@@ -79,6 +79,8 @@ pub struct WindowManager {
     pub prefix_mode: bool,
     /// Configured prefix key
     pub prefix_key: PrefixKey,
+    /// Startup commands waiting for their tab's shell to become ready.
+    pending_startup_commands: Vec<(TabId, Vec<u8>)>,
 }
 
 impl WindowManager {
@@ -109,6 +111,7 @@ impl WindowManager {
             default_codepage: codepage,
             prefix_mode: false,
             prefix_key,
+            pending_startup_commands: Vec::new(),
         }
     }
 
@@ -317,11 +320,12 @@ impl WindowManager {
 
         for (tab_id, tab_config) in tab_ids.into_iter().zip(startup_tabs.iter()) {
             if let Some(command) = tab_config.command.as_deref() {
-                self.send_command_to_tab(tab_id, command)?;
+                self.queue_startup_command_to_tab(tab_id, command)?;
             }
         }
 
         self.activate_tab(first_tab_id);
+        self.dispatch_pending_startup_commands()?;
         Ok(())
     }
 
@@ -417,6 +421,10 @@ impl WindowManager {
                 // Clean up dead panes
                 tab.cleanup_dead_panes();
             }
+        }
+
+        if let Err(e) = self.dispatch_pending_startup_commands() {
+            eprintln!("Failed to dispatch startup command: {}", e);
         }
         
         // Remove empty tabs
@@ -686,6 +694,46 @@ impl WindowManager {
             return Ok(());
         };
         self.write_to_tab(tab_id, &bytes)
+    }
+
+    fn tab_ready_for_startup_command(&self, tab_id: TabId) -> bool {
+        self.tabs
+            .get(&tab_id)
+            .and_then(|tab| tab.focused_pane())
+            .map(|pane| pane.session.startup_input_ready())
+            .unwrap_or(false)
+    }
+
+    fn queue_startup_command_to_tab(&mut self, tab_id: TabId, command: &str) -> Result<(), String> {
+        let Some(bytes) = command_bytes(command) else {
+            return Ok(());
+        };
+
+        if self.tab_ready_for_startup_command(tab_id) {
+            return self.write_to_tab(tab_id, &bytes);
+        }
+
+        self.pending_startup_commands.push((tab_id, bytes));
+        Ok(())
+    }
+
+    fn dispatch_pending_startup_commands(&mut self) -> Result<(), String> {
+        let mut remaining = Vec::new();
+
+        for (tab_id, bytes) in std::mem::take(&mut self.pending_startup_commands) {
+            if !self.tabs.contains_key(&tab_id) {
+                continue;
+            }
+
+            if self.tab_ready_for_startup_command(tab_id) {
+                self.write_to_tab(tab_id, &bytes)?;
+            } else {
+                remaining.push((tab_id, bytes));
+            }
+        }
+
+        self.pending_startup_commands = remaining;
+        Ok(())
     }
     
     /// Paste text to the focused pane with bracketed paste support
