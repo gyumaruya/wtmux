@@ -422,13 +422,24 @@ impl WindowManager {
     pub fn process_output(&mut self) -> bool {
         let mut any_output = false;
         let tabs_to_check: Vec<TabId> = self.tabs.keys().cloned().collect();
-        
+
         for tab_id in tabs_to_check.iter() {
+            let mut tab_had_output = false;
             if let Some(tab) = self.tabs.get_mut(tab_id) {
-                if tab.process_output() {
-                    any_output = true;
+                tab_had_output = tab.process_output();
+            }
+
+            if tab_had_output {
+                any_output = true;
+
+                if let Err(e) = self.dispatch_pending_startup_commands() {
+                    eprintln!("Failed to dispatch startup command: {}", e);
                 }
-                // Clean up dead panes
+            }
+
+            if let Some(tab) = self.tabs.get_mut(tab_id) {
+                // Clean up dead panes after giving newly-ready shells a chance
+                // to receive their queued startup command.
                 tab.cleanup_dead_panes();
             }
         }
