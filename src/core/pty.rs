@@ -419,14 +419,25 @@ mod tests {
         let mut buffer = [0u8; 4096];
         let ready_deadline = Instant::now() + Duration::from_secs(5);
         let mut saw_output = false;
+        let mut last_output_at = None;
 
         while Instant::now() < ready_deadline {
             if let Ok(n) = pty.read(&mut buffer) {
                 if n > 0 {
                     saw_output = true;
-                    break;
+                    last_output_at = Some(Instant::now());
+                    continue;
                 }
             }
+
+            if saw_output {
+                if let Some(last_output_at) = last_output_at {
+                    if last_output_at.elapsed() >= Duration::from_millis(200) {
+                        return;
+                    }
+                }
+            }
+
             std::thread::sleep(Duration::from_millis(10));
         }
 
