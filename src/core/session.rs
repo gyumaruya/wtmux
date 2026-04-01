@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use super::pty::{ConPty, PtyError};
 use super::term::{Response, TerminalState, VtParser};
@@ -20,6 +21,8 @@ fn log_startup_tabs(message: &str) {
         eprintln!("[startup-tabs][session] {}", message);
     }
 }
+
+const STARTUP_INPUT_READY_QUIET_PERIOD: Duration = Duration::from_millis(200);
 
 /// Session events
 #[allow(dead_code)]
@@ -51,8 +54,9 @@ pub struct Session {
     pty: Option<Arc<ConPty>>,
     /// Running flag
     running: Arc<AtomicBool>,
-    /// True once the child shell has emitted any output.
-    startup_input_ready: bool,
+    /// Once the shell stays quiet until this instant, queued startup input may
+    /// be sent without racing its bootstrap commands.
+    startup_input_ready_after: Option<Instant>,
     /// Reader thread handle
     #[cfg(windows)]
     reader_thread: Option<JoinHandle<()>>,
@@ -82,7 +86,7 @@ impl Session {
             #[cfg(windows)]
             pty: None,
             running: Arc::new(AtomicBool::new(false)),
-            startup_input_ready: false,
+            startup_input_ready_after: None,
             #[cfg(windows)]
             reader_thread: None,
             #[cfg(windows)]
@@ -204,7 +208,7 @@ impl Session {
         codepage: Option<u32>,
     ) -> Result<(), String> {
         self.running.store(true, Ordering::SeqCst);
-        self.startup_input_ready = true;
+        self.startup_input_ready_after = Some(Instant::now());
         self.mock_starts
             .push((command.map(str::to_string), codepage));
         Ok(())
@@ -224,7 +228,7 @@ impl Session {
         codepage: Option<u32>,
     ) -> Result<(), PtyError> {
         self.running.store(true, Ordering::SeqCst);
-        self.startup_input_ready = true;
+        self.startup_input_ready_after = Some(Instant::now());
         self.mock_starts
             .push((command.map(str::to_string), codepage));
         Ok(())
@@ -238,7 +242,9 @@ impl Session {
     /// Returns true once the shell has produced enough output that sending
     /// startup input is unlikely to race its initialization.
     pub fn startup_input_ready(&self) -> bool {
-        self.startup_input_ready
+        self.startup_input_ready_after
+            .map(|ready_at| Instant::now() >= ready_at)
+            .unwrap_or(false)
     }
 
     /// Write input to the PTY
@@ -345,7 +351,7 @@ impl Session {
     /// were written as visible characters even when the parser was inside a
     /// string-body state (DCS, APC, …) that should consume them silently.
     pub fn feed_bytes(&mut self, bytes: &[u8]) {
-        if !bytes.is_empty() && !self.startup_input_ready {
+        if !bytes.is_empty() && self.startup_input_ready_after.is_none() {
             log_startup_tabs(&format!(
                 "session {} observed first output: {} bytes",
                 self.id,
@@ -354,7 +360,8 @@ impl Session {
         }
 
         if !bytes.is_empty() {
-            self.startup_input_ready = true;
+            self.startup_input_ready_after =
+                Some(Instant::now() + STARTUP_INPUT_READY_QUIET_PERIOD);
         }
 
         // VT trace: write raw bytes in hex + printable-ASCII annotation
@@ -519,6 +526,43 @@ impl Drop for Session {
                 let _ = handle.join();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_input_requires_quiet_period_after_output() {
+        let mut session = Session::new(1, 80, 24);
+
+        session.feed_bytes(b"hello");
+        assert!(
+            !session.startup_input_ready(),
+            "startup input should wait for the shell to go quiet"
+        );
+
+        std::thread::sleep(STARTUP_INPUT_READY_QUIET_PERIOD + Duration::from_millis(50));
+        assert!(session.startup_input_ready());
+    }
+
+    #[test]
+    fn startup_input_quiet_period_resets_when_more_output_arrives() {
+        let mut session = Session::new(1, 80, 24);
+
+        session.feed_bytes(b"hello");
+        std::thread::sleep(Duration::from_millis(100));
+        session.feed_bytes(b"world");
+
+        std::thread::sleep(Duration::from_millis(125));
+        assert!(
+            !session.startup_input_ready(),
+            "additional shell output should delay startup input dispatch"
+        );
+
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(session.startup_input_ready());
     }
 }
 
