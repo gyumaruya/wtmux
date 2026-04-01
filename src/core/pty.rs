@@ -481,7 +481,7 @@ mod tests {
         assert!(saw_output, "cmd.exe never produced initial output");
 
         let command = format!(
-            "echo conpty-startup>\"{}\" && exit\r",
+            "echo conpty-startup>{} && exit\r",
             marker_path.display()
         );
         pty.write(command.as_bytes())
@@ -529,7 +529,7 @@ mod tests {
         assert!(saw_output, "cmd.exe never produced initial output");
 
         let command = format!(
-            "echo conpty-bytewise>\"{}\" && exit\r",
+            "echo conpty-bytewise>{} && exit\r",
             marker_path.display()
         );
         for byte in command.as_bytes() {
