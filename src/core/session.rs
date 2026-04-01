@@ -7,9 +7,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use super::pty::{ConPty, PtyError};
 use super::term::{Response, TerminalState, VtParser};
+
+fn startup_tabs_debug_enabled() -> bool {
+    std::env::var_os("WTMUX_DEBUG_STARTUP_TABS").is_some()
+}
+
+fn log_startup_tabs(message: &str) {
+    if startup_tabs_debug_enabled() {
+        eprintln!("[startup-tabs][session] {}", message);
+    }
+}
+
+const STARTUP_INPUT_READY_QUIET_PERIOD: Duration = Duration::from_millis(200);
 
 /// Session events
 #[allow(dead_code)]
@@ -41,12 +54,21 @@ pub struct Session {
     pty: Option<Arc<ConPty>>,
     /// Running flag
     running: Arc<AtomicBool>,
+    /// Once the shell stays quiet until this instant, queued startup input may
+    /// be sent without racing its bootstrap commands.
+    startup_input_ready_after: Option<Instant>,
     /// Reader thread handle
     #[cfg(windows)]
     reader_thread: Option<JoinHandle<()>>,
     /// Channel to receive PTY output
     #[cfg(windows)]
     output_rx: Option<Receiver<Vec<u8>>>,
+    /// Recorded writes for unit tests on non-Windows hosts
+    #[cfg(test)]
+    mock_writes: std::sync::Mutex<Vec<Vec<u8>>>,
+    /// Recorded start parameters for unit tests on non-Windows hosts
+    #[cfg(test)]
+    mock_starts: Vec<(Option<String>, Option<u32>)>,
 }
 
 // ConPty needs to be Send + Sync for Arc
@@ -64,10 +86,15 @@ impl Session {
             #[cfg(windows)]
             pty: None,
             running: Arc::new(AtomicBool::new(false)),
+            startup_input_ready_after: None,
             #[cfg(windows)]
             reader_thread: None,
             #[cfg(windows)]
             output_rx: None,
+            #[cfg(test)]
+            mock_writes: std::sync::Mutex::new(Vec::new()),
+            #[cfg(test)]
+            mock_starts: Vec::new(),
         }
     }
 
@@ -84,15 +111,23 @@ impl Session {
     }
 
     /// Start the session with a shell command
-    #[cfg(windows)]
+    #[cfg(all(windows, not(test)))]
     #[allow(dead_code)]
     pub fn start(&mut self, command: Option<&str>) -> Result<(), PtyError> {
         self.start_with_codepage(command, None)
     }
 
     /// Start the session with a shell command and specific codepage
-    #[cfg(windows)]
-    pub fn start_with_codepage(&mut self, command: Option<&str>, codepage: Option<u32>) -> Result<(), PtyError> {
+    #[cfg(all(windows, not(test)))]
+    pub fn start_with_codepage(
+        &mut self,
+        command: Option<&str>,
+        codepage: Option<u32>,
+    ) -> Result<(), PtyError> {
+        log_startup_tabs(&format!(
+            "start session {} command={:?} codepage={:?}",
+            self.id, command, codepage
+        ));
         let (cols, rows) = (self.state.cols, self.state.rows);
         let pty = Arc::new(ConPty::new_with_codepage(cols, rows, command, codepage)?);
         self.pty = Some(pty.clone());
@@ -144,9 +179,59 @@ impl Session {
         Ok(())
     }
 
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), not(test)))]
     pub fn start(&mut self, _command: Option<&str>) -> Result<(), String> {
         Err("PTY is only supported on Windows".to_string())
+    }
+
+    /// Start the session with a shell command and specific codepage
+    #[cfg(all(not(windows), not(test)))]
+    pub fn start_with_codepage(
+        &mut self,
+        _command: Option<&str>,
+        _codepage: Option<u32>,
+    ) -> Result<(), String> {
+        Err("PTY is only supported on Windows".to_string())
+    }
+
+    /// Test-only non-Windows stub so window-manager logic can be unit tested.
+    #[cfg(all(not(windows), test))]
+    pub fn start(&mut self, command: Option<&str>) -> Result<(), String> {
+        self.start_with_codepage(command, None)
+    }
+
+    /// Test-only non-Windows stub so window-manager logic can be unit tested.
+    #[cfg(all(not(windows), test))]
+    pub fn start_with_codepage(
+        &mut self,
+        command: Option<&str>,
+        codepage: Option<u32>,
+    ) -> Result<(), String> {
+        self.running.store(true, Ordering::SeqCst);
+        self.startup_input_ready_after = Some(Instant::now());
+        self.mock_starts
+            .push((command.map(str::to_string), codepage));
+        Ok(())
+    }
+
+    /// Test-only Windows stub so unit tests do not depend on a live PTY.
+    #[cfg(all(windows, test))]
+    pub fn start(&mut self, command: Option<&str>) -> Result<(), PtyError> {
+        self.start_with_codepage(command, None)
+    }
+
+    /// Test-only Windows stub so unit tests do not depend on a live PTY.
+    #[cfg(all(windows, test))]
+    pub fn start_with_codepage(
+        &mut self,
+        command: Option<&str>,
+        codepage: Option<u32>,
+    ) -> Result<(), PtyError> {
+        self.running.store(true, Ordering::SeqCst);
+        self.startup_input_ready_after = Some(Instant::now());
+        self.mock_starts
+            .push((command.map(str::to_string), codepage));
+        Ok(())
     }
 
     /// Check if session is running
@@ -154,19 +239,46 @@ impl Session {
         self.running.load(Ordering::SeqCst)
     }
 
+    /// Returns true once the shell has produced enough output that sending
+    /// startup input is unlikely to race its initialization.
+    pub fn startup_input_ready(&self) -> bool {
+        self.startup_input_ready_after
+            .map(|ready_at| Instant::now() >= ready_at)
+            .unwrap_or(false)
+    }
+
     /// Write input to the PTY
-    #[cfg(windows)]
+    #[cfg(all(windows, not(test)))]
     pub fn write(&self, data: &[u8]) -> Result<usize, PtyError> {
         if let Some(pty) = &self.pty {
+            log_startup_tabs(&format!(
+                "write session {}: {:?}",
+                self.id,
+                String::from_utf8_lossy(data)
+            ));
             pty.write(data)
         } else {
             Err(PtyError::InvalidHandle)
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), not(test)))]
     pub fn write(&self, _data: &[u8]) -> Result<usize, String> {
         Err("PTY is only supported on Windows".to_string())
+    }
+
+    /// Test-only non-Windows write stub that records bytes.
+    #[cfg(all(not(windows), test))]
+    pub fn write(&self, data: &[u8]) -> Result<usize, String> {
+        self.mock_writes.lock().unwrap().push(data.to_vec());
+        Ok(data.len())
+    }
+
+    /// Test-only Windows write stub that records bytes instead of touching a PTY.
+    #[cfg(all(windows, test))]
+    pub fn write(&self, data: &[u8]) -> Result<usize, PtyError> {
+        self.mock_writes.lock().unwrap().push(data.to_vec());
+        Ok(data.len())
     }
 
     /// Read and process output from PTY (non-blocking)
@@ -175,13 +287,18 @@ impl Session {
         // Check if PTY process is still running
         if let Some(pty) = &self.pty {
             if !pty.is_running() {
+                log_startup_tabs(&format!(
+                    "session {} exited before output loop, exit_code={:?}",
+                    self.id,
+                    pty.exit_code()
+                ));
                 self.running.store(false, Ordering::SeqCst);
             }
         }
-        
+
         // First, collect all available data from the channel
         let mut all_data: Vec<Vec<u8>> = Vec::new();
-        
+
         if let Some(rx) = &self.output_rx {
             loop {
                 match rx.try_recv() {
@@ -215,6 +332,16 @@ impl Session {
         Ok(false)
     }
 
+    #[cfg(test)]
+    pub fn recorded_writes(&self) -> Vec<Vec<u8>> {
+        self.mock_writes.lock().unwrap().clone()
+    }
+
+    #[cfg(test)]
+    pub fn recorded_starts(&self) -> &[(Option<String>, Option<u32>)] {
+        &self.mock_starts
+    }
+
     /// Feed raw bytes into the terminal.
     ///
     /// ConPTY always outputs well-formed UTF-8.  We decode multi-byte sequences
@@ -224,11 +351,28 @@ impl Session {
     /// were written as visible characters even when the parser was inside a
     /// string-body state (DCS, APC, …) that should consume them silently.
     pub fn feed_bytes(&mut self, bytes: &[u8]) {
+        if !bytes.is_empty() && self.startup_input_ready_after.is_none() {
+            log_startup_tabs(&format!(
+                "session {} observed first output: {} bytes",
+                self.id,
+                bytes.len()
+            ));
+        }
+
+        if !bytes.is_empty() {
+            self.startup_input_ready_after =
+                Some(Instant::now() + STARTUP_INPUT_READY_QUIET_PERIOD);
+        }
+
         // VT trace: write raw bytes in hex + printable-ASCII annotation
         if let Some(ref mut w) = self.vt_trace {
             // Header: byte offset + hex dump
-            let _ = write!(w, "─── {} bytes ───
-", bytes.len());
+            let _ = write!(
+                w,
+                "─── {} bytes ───
+",
+                bytes.len()
+            );
             for (i, chunk) in bytes.chunks(16).enumerate() {
                 let _ = write!(w, "{:06X}  ", i * 16);
                 for b in chunk {
@@ -289,14 +433,17 @@ impl Session {
 
             // ── UTF-8 multi-byte path ────────────────────────────────────
             // Determine sequence length from the leading byte.
-            let seq_len: usize = if b & 0xE0 == 0xC0 { 2 }
-                else if b & 0xF0 == 0xE0 { 3 }
-                else if b & 0xF8 == 0xF0 { 4 }
-                else {
-                    // Lone continuation byte or invalid — skip.
-                    i += 1;
-                    continue;
-                };
+            let seq_len: usize = if b & 0xE0 == 0xC0 {
+                2
+            } else if b & 0xF0 == 0xE0 {
+                3
+            } else if b & 0xF8 == 0xF0 {
+                4
+            } else {
+                // Lone continuation byte or invalid — skip.
+                i += 1;
+                continue;
+            };
 
             if i + seq_len > bytes.len() {
                 // Truncated sequence at end of buffer — skip leading byte.
@@ -379,6 +526,43 @@ impl Drop for Session {
                 let _ = handle.join();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_input_requires_quiet_period_after_output() {
+        let mut session = Session::new(1, 80, 24);
+
+        session.feed_bytes(b"hello");
+        assert!(
+            !session.startup_input_ready(),
+            "startup input should wait for the shell to go quiet"
+        );
+
+        std::thread::sleep(STARTUP_INPUT_READY_QUIET_PERIOD + Duration::from_millis(50));
+        assert!(session.startup_input_ready());
+    }
+
+    #[test]
+    fn startup_input_quiet_period_resets_when_more_output_arrives() {
+        let mut session = Session::new(1, 80, 24);
+
+        session.feed_bytes(b"hello");
+        std::thread::sleep(Duration::from_millis(100));
+        session.feed_bytes(b"world");
+
+        std::thread::sleep(Duration::from_millis(125));
+        assert!(
+            !session.startup_input_ready(),
+            "additional shell output should delay startup input dispatch"
+        );
+
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(session.startup_input_ready());
     }
 }
 

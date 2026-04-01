@@ -125,7 +125,7 @@ impl TerminalState {
         // Clamp cursor positions
         let max_col = cols.saturating_sub(1);
         let max_row = rows.saturating_sub(1);
-        
+
         self.primary_cursor.col = self.primary_cursor.col.min(max_col);
         self.primary_cursor.row = self.primary_cursor.row.min(max_row);
         self.alternate_cursor.col = self.alternate_cursor.col.min(max_col);
@@ -170,7 +170,7 @@ impl TerminalState {
             let cursor = self.active_cursor();
             (cursor.row as usize, cursor.col as usize)
         };
-        
+
         // Ensure col is within bounds for writing
         if col >= self.cols as usize {
             return;
@@ -545,14 +545,14 @@ impl TerminalState {
                 self.active_screen_mut().mark_all_dirty();
             }
             2004 => self.modes.bracketed_paste = enable,
-            
+
             // Mouse tracking modes
             1000 => self.modes.mouse_tracking = enable,
             1002 => self.modes.mouse_button_tracking = enable,
             1003 => self.modes.mouse_any_event = enable,
             1006 => self.modes.mouse_sgr_mode = enable,
             1015 => self.modes.mouse_urxvt_mode = enable,
-            
+
             _ => {} // Ignore unknown modes
         }
     }
@@ -579,7 +579,7 @@ impl TerminalState {
         // Convert screen row to absolute buffer row
         let screen = self.active_screen();
         let abs_row = screen.screen_to_buffer_row(row as usize);
-        
+
         self.selection = Some(Selection {
             start: (col, abs_row),
             end: (col, abs_row),
@@ -592,7 +592,7 @@ impl TerminalState {
     pub fn update_selection(&mut self, col: u16, row: u16) {
         // Convert screen row to absolute buffer row first
         let abs_row = self.active_screen().screen_to_buffer_row(row as usize);
-        
+
         if let Some(ref mut sel) = self.selection {
             sel.end = (col, abs_row);
         }
@@ -627,12 +627,12 @@ impl TerminalState {
 
         // Normalize selection (start before end)
         let (start, end) = self.normalize_selection(sel);
-        
+
         // Check if (col, abs_row) is within selection
         if abs_row < start.1 || abs_row > end.1 {
             return false;
         }
-        
+
         if start.1 == end.1 {
             // Single line selection
             col >= start.0 && col <= end.0
@@ -652,7 +652,7 @@ impl TerminalState {
     fn normalize_selection(&self, sel: &Selection) -> ((u16, usize), (u16, usize)) {
         let start = sel.start;
         let end = sel.end;
-        
+
         if start.1 < end.1 || (start.1 == end.1 && start.0 <= end.0) {
             (start, end)
         } else {
@@ -664,19 +664,27 @@ impl TerminalState {
     pub fn get_selected_text(&self) -> Option<String> {
         let sel = self.selection.as_ref()?;
         let (start, end) = self.normalize_selection(sel);
-        
+
         let screen = self.active_screen();
         let mut result = String::new();
-        
+
         for abs_row in start.1..=end.1 {
             let row = match screen.get_row_absolute(abs_row) {
                 Some(r) => r,
                 None => continue,
             };
-            
-            let col_start = if abs_row == start.1 { start.0 as usize } else { 0 };
-            let col_end = if abs_row == end.1 { end.0 as usize + 1 } else { row.cells.len() };
-            
+
+            let col_start = if abs_row == start.1 {
+                start.0 as usize
+            } else {
+                0
+            };
+            let col_end = if abs_row == end.1 {
+                end.0 as usize + 1
+            } else {
+                row.cells.len()
+            };
+
             for col_idx in col_start..col_end.min(row.cells.len()) {
                 let cell = &row.cells[col_idx];
                 if !cell.is_continuation() {
@@ -687,7 +695,7 @@ impl TerminalState {
                     }
                 }
             }
-            
+
             // Add newline between rows (but not for wrapped lines)
             if abs_row < end.1 && !row.wrapped {
                 // Trim trailing spaces from line
@@ -697,12 +705,12 @@ impl TerminalState {
                 result.push('\n');
             }
         }
-        
+
         // Trim trailing spaces
         while result.ends_with(' ') {
             result.pop();
         }
-        
+
         if result.is_empty() {
             None
         } else {
@@ -960,7 +968,7 @@ impl CellAttrs {
 }
 
 /// Color definition
-#[derive(Clone, Copy, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum Color {
     #[default]
     Default,
@@ -1019,7 +1027,7 @@ pub enum CursorShape {
 
 impl Default for CursorShape {
     fn default() -> Self {
-        Self::BlinkingBlock  // デフォルトをブリンクブロックに
+        Self::BlinkingBlock // デフォルトをブリンクブロックに
     }
 }
 
@@ -1094,7 +1102,7 @@ pub struct TerminalModes {
     pub insert_mode: bool,
     pub linefeed_newline: bool,
     pub bracketed_paste: bool,
-    
+
     // Mouse tracking modes
     /// 1000 - X10 mouse reporting (click only)
     pub mouse_tracking: bool,

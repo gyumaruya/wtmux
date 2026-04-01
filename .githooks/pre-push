@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if ! command -v betterleaks >/dev/null 2>&1; then
+  echo "betterleaks is required for secret scanning." >&2
+  echo "Install: https://github.com/leaktk/betterleaks" >&2
+  exit 1
+fi
+
+remote_name="${1:-origin}"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [[ -z "${local_sha:-}" || "$local_sha" =~ ^0+$ ]]; then
+    continue
+  fi
+
+  if [[ -n "${remote_sha:-}" && ! "$remote_sha" =~ ^0+$ ]]; then
+    log_opts=(--no-merges "${remote_sha}..${local_sha}")
+  else
+    log_opts=(--no-merges --not "--remotes=${remote_name}" "$local_sha")
+  fi
+
+  betterleaks git --redact --log-opts "${log_opts[*]}"
+  "$repo_root/scripts/check-sensitive-changes.sh" --log-opts "${log_opts[@]}"
+done
