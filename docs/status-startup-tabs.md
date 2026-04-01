@@ -71,29 +71,74 @@ prlctl exec "Windows 11" powershell -NoLogo -NoProfile -Command "Get-Command git
 - ゲストは `efi-arm64`
 - Windows バージョンは `10.0.26200.7840`
 - `prlctl exec` は使える
-- 少なくとも `git.exe` は入っている
+- `git.exe` は入っている
+- Rust toolchain を導入できる
+- Visual Studio Build Tools と Windows SDK を導入できる
+
+2026-04-01 実行:
+
+```powershell
+cargo test
+```
+
+結果:
+
+- `13 passed; 0 failed`
+- Windows 固有の `core::pty::tests::test_conpty_creation` を含めて成功
+
+2026-04-01 実行:
+
+```powershell
+cargo build --release
+```
+
+結果:
+
+- 成功
+- `target\release\wtmux.exe` を生成
 
 現時点の制約:
 
 - いま見えている Parallels ゲストは `ARM Windows` のみ
 - `prlctl exec --current-user` は今の状態では使えず、自動実行は
   `systemprofile` 文脈になる
-- その文脈では `rustc` / `cargo` が見えていない
-- そのため、Parallels ゲスト内で現行差分を build して
-  `scripts/smoke-startup-tabs.ps1` を回す段階まではまだ進めていない
+
+### Windows 実スモーク結果
+
+2026-04-01 実行:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\smoke-startup-tabs.ps1 -WtmuxExe .\target\release\wtmux.exe -Shell cmd
+```
+
+結果:
+
+- 失敗
+- タブ生成自体は見える
+- ただし marker file が生成されない
+- `WTMUX_DEBUG_STARTUP_TABS=1` 付きの再実行では、
+  - tab 1 command は pending のまま close 済みタブとして drop
+  - tab 2 command は dispatch されたが marker file は生成されない
+
+判断:
+
+- Windows ARM 上の build / unit test 基盤は整った
+- しかし startup tabs の実挙動は、まだ実機 smoke を通っていない
+- upstream 向けにはこの failure を解消してから進めるべき
 
 ## まだできていないこと
 
 ### Windows 上の実スモーク
 
-未実施:
+未完了:
 
-- `cmd.exe` で startup tabs の自動スモーク
-- `pwsh.exe` で startup tabs の自動スモーク
-- `--vt-trace` を含む Windows 証跡回収
+- `cmd.exe` smoke の成功
+- `pwsh.exe` smoke の成功
+- `--vt-trace` を含む成功証跡回収
 
 必要条件:
 
+- startup command dispatch の実機 failure 解消
 - `x64 Windows` での build / 実行経路
 - もしくは Parallels 側に `x64` ゲストを用意する
 - あるいは既存のリモート `x64 Windows` を SSH で操作する
@@ -112,8 +157,9 @@ prlctl exec "Windows 11" powershell -NoLogo -NoProfile -Command "Get-Command git
 
 - 設計、実装、unit test、設定例、検証計画は揃っている
 - macOS 上の純ロジック検証は通っている
-- ただし upstream 向けに十分と言うには、まだ `x64 Windows` の
-  実行証跡が不足している
+- Windows ARM 上で `cargo test` / `cargo build --release` までは通った
+- ただし startup tabs の実スモークは失敗している
+- 加えて upstream 向けには、まだ `x64 Windows` の実行証跡も不足している
 
 ## 個人用 PR の使い方
 

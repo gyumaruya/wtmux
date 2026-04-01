@@ -443,6 +443,7 @@ impl WindowManager {
             .map(|(id, _)| *id)
             .collect();
         for tab_id in empty_tabs {
+            log_startup_tabs(&format!("remove empty tab {}", tab_id));
             self.tabs.remove(&tab_id);
             self.tab_order.retain(|&id| id != tab_id);
         }

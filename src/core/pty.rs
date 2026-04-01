@@ -68,6 +68,18 @@ pub enum PtyError {
 
 pub type Result<T> = std::result::Result<T, PtyError>;
 
+#[cfg(windows)]
+fn startup_tabs_debug_enabled() -> bool {
+    std::env::var_os("WTMUX_DEBUG_STARTUP_TABS").is_some()
+}
+
+#[cfg(windows)]
+fn log_startup_tabs(message: &str) {
+    if startup_tabs_debug_enabled() {
+        eprintln!("[startup-tabs][pty] {}", message);
+    }
+}
+
 /// ConPTY handle wrapper
 #[cfg(windows)]
 pub struct ConPty {
@@ -271,6 +283,13 @@ impl ConPty {
             WriteFile(self.input_write, Some(data), Some(&mut written), None)
                 .map_err(|e| PtyError::Write(io::Error::from_raw_os_error(e.code().0 as i32)))?;
         }
+
+        log_startup_tabs(&format!(
+            "WriteFile wrote {} of {} bytes: {:?}",
+            written,
+            data.len(),
+            String::from_utf8_lossy(data)
+        ));
 
         Ok(written as usize)
     }

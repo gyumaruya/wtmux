@@ -4,6 +4,16 @@ use std::collections::HashMap;
 use super::pane::{Pane, PaneId, BorderStyle};
 use super::layout::{Layout, LayoutType, SplitDirection};
 
+fn startup_tabs_debug_enabled() -> bool {
+    std::env::var_os("WTMUX_DEBUG_STARTUP_TABS").is_some()
+}
+
+fn log_startup_tabs(message: &str) {
+    if startup_tabs_debug_enabled() {
+        eprintln!("[startup-tabs][tab] {}", message);
+    }
+}
+
 /// Unique identifier for a tab
 pub type TabId = u64;
 
@@ -280,11 +290,16 @@ impl Tab {
             .filter(|(_, pane)| !pane.session.is_running())
             .map(|(id, _)| *id)
             .collect();
-        
+
         if dead_panes.is_empty() {
             return;
         }
-        
+
+        log_startup_tabs(&format!(
+            "tab {} cleaning dead panes {:?}",
+            self.id, dead_panes
+        ));
+
         for pane_id in dead_panes {
             // Remove from layout
             if let Some(new_layout) = self.layout.remove(pane_id) {

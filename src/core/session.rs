@@ -11,6 +11,16 @@ use std::thread::{self, JoinHandle};
 use super::pty::{ConPty, PtyError};
 use super::term::{Response, TerminalState, VtParser};
 
+fn startup_tabs_debug_enabled() -> bool {
+    std::env::var_os("WTMUX_DEBUG_STARTUP_TABS").is_some()
+}
+
+fn log_startup_tabs(message: &str) {
+    if startup_tabs_debug_enabled() {
+        eprintln!("[startup-tabs][session] {}", message);
+    }
+}
+
 /// Session events
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -110,6 +120,10 @@ impl Session {
         command: Option<&str>,
         codepage: Option<u32>,
     ) -> Result<(), PtyError> {
+        log_startup_tabs(&format!(
+            "start session {} command={:?} codepage={:?}",
+            self.id, command, codepage
+        ));
         let (cols, rows) = (self.state.cols, self.state.rows);
         let pty = Arc::new(ConPty::new_with_codepage(cols, rows, command, codepage)?);
         self.pty = Some(pty.clone());
@@ -231,6 +245,11 @@ impl Session {
     #[cfg(all(windows, not(test)))]
     pub fn write(&self, data: &[u8]) -> Result<usize, PtyError> {
         if let Some(pty) = &self.pty {
+            log_startup_tabs(&format!(
+                "write session {}: {:?}",
+                self.id,
+                String::from_utf8_lossy(data)
+            ));
             pty.write(data)
         } else {
             Err(PtyError::InvalidHandle)
@@ -262,6 +281,11 @@ impl Session {
         // Check if PTY process is still running
         if let Some(pty) = &self.pty {
             if !pty.is_running() {
+                log_startup_tabs(&format!(
+                    "session {} exited before output loop, exit_code={:?}",
+                    self.id,
+                    pty.exit_code()
+                ));
                 self.running.store(false, Ordering::SeqCst);
             }
         }
@@ -321,6 +345,14 @@ impl Session {
     /// were written as visible characters even when the parser was inside a
     /// string-body state (DCS, APC, …) that should consume them silently.
     pub fn feed_bytes(&mut self, bytes: &[u8]) {
+        if !bytes.is_empty() && !self.startup_input_ready {
+            log_startup_tabs(&format!(
+                "session {} observed first output: {} bytes",
+                self.id,
+                bytes.len()
+            ));
+        }
+
         if !bytes.is_empty() {
             self.startup_input_ready = true;
         }
