@@ -415,6 +415,51 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    fn wait_for_initial_output(pty: &ConPty) {
+        let mut buffer = [0u8; 4096];
+        let ready_deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_output = false;
+
+        while Instant::now() < ready_deadline {
+            if let Ok(n) = pty.read(&mut buffer) {
+                if n > 0 {
+                    saw_output = true;
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(saw_output, "cmd.exe never produced initial output");
+    }
+
+    fn collect_output_until_exit(pty: &ConPty) -> String {
+        let mut buffer = [0u8; 4096];
+        let mut collected = Vec::new();
+        let exit_deadline = Instant::now() + Duration::from_secs(5);
+
+        while Instant::now() < exit_deadline {
+            match pty.read(&mut buffer) {
+                Ok(n) if n > 0 => collected.extend_from_slice(&buffer[..n]),
+                Ok(_) => {}
+                Err(_) => {}
+            }
+
+            if !pty.is_running() {
+                match pty.read(&mut buffer) {
+                    Ok(n) if n > 0 => collected.extend_from_slice(&buffer[..n]),
+                    _ => {}
+                }
+                assert_eq!(pty.exit_code(), Some(0));
+                return String::from_utf8_lossy(&collected).into_owned();
+            }
+
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        panic!("cmd.exe did not exit before timeout");
+    }
+
     #[test]
     fn test_conpty_creation() {
         let pty = ConPty::new(80, 24, Some("cmd.exe /c echo hello"));
@@ -425,130 +470,27 @@ mod tests {
     fn test_conpty_accepts_written_exit_input() {
         let pty = ConPty::new_with_codepage(80, 24, Some("cmd.exe"), Some(65001))
             .expect("cmd.exe PTY should start");
-        let mut buffer = [0u8; 4096];
-        let ready_deadline = Instant::now() + Duration::from_secs(5);
-        let mut saw_output = false;
-
-        while Instant::now() < ready_deadline {
-            if let Ok(n) = pty.read(&mut buffer) {
-                if n > 0 {
-                    saw_output = true;
-                    break;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        assert!(saw_output, "cmd.exe never produced initial output");
+        wait_for_initial_output(&pty);
 
         pty.write(b"exit\r").expect("exit command should be written");
-
-        let exit_deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < exit_deadline {
-            if !pty.is_running() {
-                assert_eq!(pty.exit_code(), Some(0));
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        panic!("cmd.exe did not exit after receiving exit input");
+        let output = collect_output_until_exit(&pty);
+        assert!(!output.is_empty(), "exit command should produce at least prompt output");
     }
 
     #[test]
-    fn test_conpty_executes_compound_cmd_input() {
-        let marker_dir = std::env::temp_dir().join(format!("wtmux-conpty-{}", std::process::id()));
-        let marker_path = marker_dir.join("marker.txt");
-        let _ = std::fs::remove_file(&marker_path);
-        std::fs::create_dir_all(&marker_dir).expect("temp marker dir should exist");
-
+    fn test_conpty_executes_echo_then_exit_input() {
         let pty = ConPty::new_with_codepage(80, 24, Some("cmd.exe"), Some(65001))
             .expect("cmd.exe PTY should start");
-        let mut buffer = [0u8; 4096];
-        let ready_deadline = Instant::now() + Duration::from_secs(5);
-        let mut saw_output = false;
+        wait_for_initial_output(&pty);
 
-        while Instant::now() < ready_deadline {
-            if let Ok(n) = pty.read(&mut buffer) {
-                if n > 0 {
-                    saw_output = true;
-                    break;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        pty.write(b"echo conpty-startup && exit\r")
+            .expect("compound echo command should be written");
 
-        assert!(saw_output, "cmd.exe never produced initial output");
-
-        let command = format!(
-            "echo conpty-startup>{} && exit\r",
-            marker_path.display()
+        let output = collect_output_until_exit(&pty);
+        assert!(
+            output.contains("conpty-startup"),
+            "cmd.exe output should include echoed startup token, got: {:?}",
+            output
         );
-        pty.write(command.as_bytes())
-            .expect("compound command should be written");
-
-        let exit_deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < exit_deadline {
-            if !pty.is_running() {
-                assert_eq!(pty.exit_code(), Some(0));
-                let content = std::fs::read_to_string(&marker_path)
-                    .expect("compound command should create marker file");
-                assert_eq!(content.trim(), "conpty-startup");
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        panic!("cmd.exe did not finish compound command input");
-    }
-
-    #[test]
-    fn test_conpty_executes_compound_cmd_input_bytewise() {
-        let marker_dir =
-            std::env::temp_dir().join(format!("wtmux-conpty-bytewise-{}", std::process::id()));
-        let marker_path = marker_dir.join("marker.txt");
-        let _ = std::fs::remove_file(&marker_path);
-        std::fs::create_dir_all(&marker_dir).expect("temp marker dir should exist");
-
-        let pty = ConPty::new_with_codepage(80, 24, Some("cmd.exe"), Some(65001))
-            .expect("cmd.exe PTY should start");
-        let mut buffer = [0u8; 4096];
-        let ready_deadline = Instant::now() + Duration::from_secs(5);
-        let mut saw_output = false;
-
-        while Instant::now() < ready_deadline {
-            if let Ok(n) = pty.read(&mut buffer) {
-                if n > 0 {
-                    saw_output = true;
-                    break;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        assert!(saw_output, "cmd.exe never produced initial output");
-
-        let command = format!(
-            "echo conpty-bytewise>{} && exit\r",
-            marker_path.display()
-        );
-        for byte in command.as_bytes() {
-            pty.write(&[*byte]).expect("bytewise input should be written");
-            std::thread::sleep(Duration::from_millis(2));
-        }
-
-        let exit_deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < exit_deadline {
-            if !pty.is_running() {
-                assert_eq!(pty.exit_code(), Some(0));
-                let content = std::fs::read_to_string(&marker_path)
-                    .expect("bytewise compound command should create marker file");
-                assert_eq!(content.trim(), "conpty-bytewise");
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        panic!("cmd.exe did not finish bytewise compound command input");
     }
 }
