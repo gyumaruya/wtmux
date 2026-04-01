@@ -359,6 +359,10 @@ fn get_encoding_name(codepage: Option<u32>) -> &'static str {
     }
 }
 
+fn headless_mode_enabled() -> bool {
+    std::env::var_os("WTMUX_HEADLESS").is_some()
+}
+
 /// Relaunch in a native cmd.exe window
 #[cfg(windows)]
 fn relaunch_in_cmd() -> ! {
@@ -712,6 +716,7 @@ fn run_terminal_wm(config: Config, cols: u16, rows: u16, shell_name: &str, encod
 #[cfg(windows)]
 fn run_wm_main_loop(wm: &mut WindowManager, renderer: &mut crate::ui::WmRenderer) -> anyhow::Result<()> {
     let poll_timeout = Duration::from_millis(10);
+    let headless_mode = headless_mode_enabled();
     let mut selector = HistorySelector::new();
     
     // Theme selector state
@@ -787,6 +792,11 @@ fn run_wm_main_loop(wm: &mut WindowManager, renderer: &mut crate::ui::WmRenderer
             // Clear dirty state after rendering so the next frame only redraws
             // rows that have genuinely changed.
             wm.clear_all_dirty();
+        }
+
+        if headless_mode {
+            std::thread::sleep(poll_timeout);
+            continue;
         }
 
         // Poll for events

@@ -162,7 +162,7 @@ $argSuffix = if ($wtmuxArgs.Count -gt 0) {
     ""
 }
 
-$commandLine = 'set "LOCALAPPDATA={0}" && "{1}"{2}' -f $LocalAppDataRoot, $WtmuxExe, $argSuffix
+$commandLine = 'set "LOCALAPPDATA={0}" && set "WTMUX_HEADLESS=1" && "{1}"{2}' -f $LocalAppDataRoot, $WtmuxExe, $argSuffix
 $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $commandLine -NoNewWindow -PassThru
 $finished = $process.WaitForExit($TimeoutSec * 1000)
 
