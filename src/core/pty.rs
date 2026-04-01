@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn test_conpty_executes_echo_then_exit_input() {
-        let pty = ConPty::new_with_codepage(80, 24, Some("cmd.exe"), Some(65001))
+        let pty = ConPty::new(80, 24, Some("cmd.exe"))
             .expect("cmd.exe PTY should start");
         wait_for_initial_output(&pty);
 
