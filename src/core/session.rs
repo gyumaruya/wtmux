@@ -94,14 +94,14 @@ impl Session {
     }
 
     /// Start the session with a shell command
-    #[cfg(windows)]
+    #[cfg(all(windows, not(test)))]
     #[allow(dead_code)]
     pub fn start(&mut self, command: Option<&str>) -> Result<(), PtyError> {
         self.start_with_codepage(command, None)
     }
 
     /// Start the session with a shell command and specific codepage
-    #[cfg(windows)]
+    #[cfg(all(windows, not(test)))]
     pub fn start_with_codepage(
         &mut self,
         command: Option<&str>,
@@ -173,14 +173,14 @@ impl Session {
         Err("PTY is only supported on Windows".to_string())
     }
 
-    /// Test-only non-Windows stub so window-manager logic can be unit tested.
-    #[cfg(all(not(windows), test))]
+    /// Test-only stub so window-manager logic can be unit tested without a PTY.
+    #[cfg(test)]
     pub fn start(&mut self, command: Option<&str>) -> Result<(), String> {
         self.start_with_codepage(command, None)
     }
 
-    /// Test-only non-Windows stub so window-manager logic can be unit tested.
-    #[cfg(all(not(windows), test))]
+    /// Test-only stub so window-manager logic can be unit tested without a PTY.
+    #[cfg(test)]
     pub fn start_with_codepage(
         &mut self,
         command: Option<&str>,
@@ -198,7 +198,7 @@ impl Session {
     }
 
     /// Write input to the PTY
-    #[cfg(windows)]
+    #[cfg(all(windows, not(test)))]
     pub fn write(&self, data: &[u8]) -> Result<usize, PtyError> {
         if let Some(pty) = &self.pty {
             pty.write(data)
@@ -212,8 +212,8 @@ impl Session {
         Err("PTY is only supported on Windows".to_string())
     }
 
-    /// Test-only non-Windows write stub that records bytes.
-    #[cfg(all(not(windows), test))]
+    /// Test-only write stub that records bytes instead of touching a PTY.
+    #[cfg(test)]
     pub fn write(&self, data: &[u8]) -> Result<usize, String> {
         self.mock_writes.lock().unwrap().push(data.to_vec());
         Ok(data.len())
