@@ -413,10 +413,45 @@ impl Drop for ConPty {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn test_conpty_creation() {
         let pty = ConPty::new(80, 24, Some("cmd.exe /c echo hello"));
         assert!(pty.is_ok());
+    }
+
+    #[test]
+    fn test_conpty_accepts_written_exit_input() {
+        let pty = ConPty::new_with_codepage(80, 24, Some("cmd.exe"), Some(65001))
+            .expect("cmd.exe PTY should start");
+        let mut buffer = [0u8; 4096];
+        let ready_deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_output = false;
+
+        while Instant::now() < ready_deadline {
+            if let Ok(n) = pty.read(&mut buffer) {
+                if n > 0 {
+                    saw_output = true;
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(saw_output, "cmd.exe never produced initial output");
+
+        pty.write(b"exit\r").expect("exit command should be written");
+
+        let exit_deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < exit_deadline {
+            if !pty.is_running() {
+                assert_eq!(pty.exit_code(), Some(0));
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        panic!("cmd.exe did not exit after receiving exit input");
     }
 }
