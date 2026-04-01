@@ -33,6 +33,16 @@ use super::layout::SplitDirection;
 
 use crate::config::{PrefixKey, StartupTabConfig};
 
+fn startup_tabs_debug_enabled() -> bool {
+    std::env::var_os("WTMUX_DEBUG_STARTUP_TABS").is_some()
+}
+
+fn log_startup_tabs(message: &str) {
+    if startup_tabs_debug_enabled() {
+        eprintln!("[startup-tabs] {}", message);
+    }
+}
+
 /// The central manager for all tabs and pane operations.
 ///
 /// `WindowManager` is the top-level component that coordinates:
@@ -710,9 +720,19 @@ impl WindowManager {
         };
 
         if self.tab_ready_for_startup_command(tab_id) {
+            log_startup_tabs(&format!(
+                "dispatch immediately to tab {}: {:?}",
+                tab_id,
+                String::from_utf8_lossy(&bytes)
+            ));
             return self.write_to_tab(tab_id, &bytes);
         }
 
+        log_startup_tabs(&format!(
+            "queue tab {} until shell output: {:?}",
+            tab_id,
+            String::from_utf8_lossy(&bytes)
+        ));
         self.pending_startup_commands.push((tab_id, bytes));
         Ok(())
     }
@@ -722,10 +742,16 @@ impl WindowManager {
 
         for (tab_id, bytes) in std::mem::take(&mut self.pending_startup_commands) {
             if !self.tabs.contains_key(&tab_id) {
+                log_startup_tabs(&format!("drop pending command for closed tab {}", tab_id));
                 continue;
             }
 
             if self.tab_ready_for_startup_command(tab_id) {
+                log_startup_tabs(&format!(
+                    "dispatch queued command to tab {}: {:?}",
+                    tab_id,
+                    String::from_utf8_lossy(&bytes)
+                ));
                 self.write_to_tab(tab_id, &bytes)?;
             } else {
                 remaining.push((tab_id, bytes));
